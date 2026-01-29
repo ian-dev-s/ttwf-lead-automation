@@ -1,0 +1,289 @@
+// Prisma schema for TTWF Lead Generator
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User roles for access control
+enum UserRole {
+  ADMIN
+  USER
+  VIEWER
+}
+
+// Lead statuses for Kanban tracking
+enum LeadStatus {
+  NEW
+  QUALIFIED
+  MESSAGE_READY
+  PENDING_APPROVAL
+  CONTACTED
+  RESPONDED
+  CONVERTED
+  NOT_INTERESTED
+  INVALID
+}
+
+// Message types
+enum MessageType {
+  WHATSAPP
+  EMAIL
+}
+
+// Message status
+enum MessageStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SENT
+  FAILED
+}
+
+// AI Provider options
+enum AIProvider {
+  OPENAI
+  ANTHROPIC
+  GOOGLE
+}
+
+// Scraping job status
+enum JobStatus {
+  SCHEDULED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// User model for authentication and access control
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  passwordHash  String    @map("password_hash")
+  role          UserRole  @default(USER)
+  emailVerified DateTime? @map("email_verified")
+  image         String?
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  leads          Lead[]
+  statusChanges  StatusHistory[]
+  sessions       Session[]
+  accounts       Account[]
+
+  @@map("users")
+}
+
+// NextAuth Account model
+model Account {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+// NextAuth Session model
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// NextAuth Verification Token
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// Lead model - the core business entity
+model Lead {
+  id             String     @id @default(cuid())
+  businessName   String     @map("business_name")
+  industry       String?
+  location       String
+  address        String?
+  phone          String?
+  email          String?
+  facebookUrl    String?    @map("facebook_url")
+  googleMapsUrl  String?    @map("google_maps_url")
+  website        String?
+  websiteQuality Int?       @map("website_quality") // 0-100 score, null = no website
+  googleRating   Float?     @map("google_rating")
+  reviewCount    Int?       @map("review_count")
+  status         LeadStatus @default(NEW)
+  source         String?    // e.g., "google_maps", "facebook", "manual"
+  score          Int        @default(0) // Lead priority score
+  notes          String?    @db.Text
+  metadata       Json?      // Additional flexible data
+  
+  // Tracking
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+  contactedAt    DateTime?  @map("contacted_at")
+  
+  // Relations
+  createdById    String?    @map("created_by_id")
+  createdBy      User?      @relation(fields: [createdById], references: [id])
+  messages       Message[]
+  statusHistory  StatusHistory[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([score])
+  @@map("leads")
+}
+
+// Message model - for personalized outreach
+model Message {
+  id          String        @id @default(cuid())
+  leadId      String        @map("lead_id")
+  type        MessageType
+  subject     String?       // For email
+  content     String        @db.Text
+  status      MessageStatus @default(DRAFT)
+  sentAt      DateTime?     @map("sent_at")
+  error       String?       // If sending failed
+  
+  // Tracking
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+  
+  // Relations
+  lead        Lead          @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@index([status])
+  @@map("messages")
+}
+
+// Status history for tracking lead progression
+model StatusHistory {
+  id          String     @id @default(cuid())
+  leadId      String     @map("lead_id")
+  fromStatus  LeadStatus @map("from_status")
+  toStatus    LeadStatus @map("to_status")
+  changedById String?    @map("changed_by_id")
+  changedAt   DateTime   @default(now()) @map("changed_at")
+  notes       String?
+  
+  // Relations
+  lead        Lead       @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  changedBy   User?      @relation(fields: [changedById], references: [id])
+
+  @@index([leadId])
+  @@map("status_history")
+}
+
+// AI Configuration for flexible provider switching
+model AIConfig {
+  id          String     @id @default(cuid())
+  name        String     // Friendly name for the config
+  provider    AIProvider
+  model       String     // e.g., "gpt-4", "claude-3-opus", "gemini-pro"
+  isActive    Boolean    @default(false) @map("is_active")
+  
+  // Guardrails configuration
+  temperature    Float    @default(0.7)
+  maxTokens      Int      @default(1000) @map("max_tokens")
+  systemPrompt   String?  @db.Text @map("system_prompt")
+  
+  // Rate limiting
+  requestsPerDay Int      @default(100) @map("requests_per_day")
+  requestsUsed   Int      @default(0) @map("requests_used")
+  lastResetAt    DateTime @default(now()) @map("last_reset_at")
+  
+  // Tracking
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  @@map("ai_configs")
+}
+
+// Scraping job configuration and tracking
+model ScrapingJob {
+  id             String    @id @default(cuid())
+  status         JobStatus @default(SCHEDULED)
+  leadsRequested Int       @map("leads_requested")
+  leadsFound     Int       @default(0) @map("leads_found")
+  
+  // Search parameters
+  searchQuery    String?   @map("search_query")
+  categories     String[]  // Business categories to search
+  locations      String[]  // Locations to search
+  minRating      Float?    @map("min_rating")
+  maxRadius      Int?      @map("max_radius") // in km
+  
+  // Scheduling
+  scheduledFor   DateTime  @map("scheduled_for")
+  startedAt      DateTime? @map("started_at")
+  completedAt    DateTime? @map("completed_at")
+  
+  // Error handling
+  error          String?
+  
+  // Tracking
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([scheduledFor])
+  @@map("scraping_jobs")
+}
+
+// System settings for configurable parameters
+model SystemSettings {
+  id                    String   @id @default("default")
+  
+  // Lead generation settings
+  dailyLeadTarget       Int      @default(10) @map("daily_lead_target")
+  leadGenerationEnabled Boolean  @default(true) @map("lead_generation_enabled")
+  
+  // Scraping settings
+  scrapeDelayMs         Int      @default(2000) @map("scrape_delay_ms")
+  maxLeadsPerRun        Int      @default(20) @map("max_leads_per_run")
+  searchRadiusKm        Int      @default(50) @map("search_radius_km")
+  minGoogleRating       Float    @default(4.0) @map("min_google_rating")
+  
+  // Industry settings
+  targetIndustries      String[] @map("target_industries")
+  blacklistedIndustries String[] @map("blacklisted_industries")
+  
+  // Location settings
+  targetCities          String[] @map("target_cities")
+  
+  // Message settings
+  autoGenerateMessages  Boolean  @default(true) @map("auto_generate_messages")
+  
+  // Tracking
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}

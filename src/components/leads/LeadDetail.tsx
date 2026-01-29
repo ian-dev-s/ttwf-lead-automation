@@ -1,0 +1,360 @@
+'use client';
+
+import { ApprovalGate } from '@/components/messages/ApprovalGate';
+import { MessagePreview } from '@/components/messages/MessagePreview';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+    formatDateTime,
+    formatPhoneNumber,
+    getWhatsAppUrl,
+    leadStatusColors,
+    leadStatusLabels,
+} from '@/lib/utils';
+import { Lead, Message, MessageType, StatusHistory } from '@prisma/client';
+import {
+    ExternalLink,
+    Facebook,
+    Globe,
+    History,
+    Loader2,
+    Mail,
+    MapPin,
+    MessageSquare,
+    Phone,
+    Sparkles,
+    Star,
+} from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
+
+interface LeadWithRelations extends Lead {
+  messages: Message[];
+  statusHistory: (StatusHistory & {
+    changedBy: { name: string | null; email: string } | null;
+  })[];
+  createdBy: { name: string | null; email: string } | null;
+}
+
+interface LeadDetailProps {
+  lead: LeadWithRelations;
+}
+
+export function LeadDetail({ lead }: LeadDetailProps) {
+  const router = useRouter();
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generatingType, setGeneratingType] = useState<MessageType | null>(null);
+
+  const handleGenerateMessage = async (type: MessageType) => {
+    setIsGenerating(true);
+    setGeneratingType(type);
+
+    try {
+      const response = await fetch('/api/ai/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          leadId: lead.id,
+          type,
+          useAI: true,
+          saveMessage: true,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to generate message');
+
+      router.refresh();
+    } catch (error) {
+      console.error('Error generating message:', error);
+    } finally {
+      setIsGenerating(false);
+      setGeneratingType(null);
+    }
+  };
+
+  const pendingMessages = lead.messages.filter(
+    (m) => m.status === 'DRAFT' || m.status === 'PENDING_APPROVAL'
+  );
+  const sentMessages = lead.messages.filter((m) => m.status === 'SENT');
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">{lead.businessName}</h1>
+          <p className="text-muted-foreground">{lead.industry || 'No industry specified'}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge className={leadStatusColors[lead.status]}>
+            {leadStatusLabels[lead.status]}
+          </Badge>
+          <Badge variant="secondary">Score: {lead.score}</Badge>
+        </div>
+      </div>
+
+      <Tabs defaultValue="details" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="details">Details</TabsTrigger>
+          <TabsTrigger value="messages">
+            Messages ({lead.messages.length})
+          </TabsTrigger>
+          <TabsTrigger value="history">History</TabsTrigger>
+        </TabsList>
+
+        {/* Details Tab */}
+        <TabsContent value="details" className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Contact Information */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Contact Information</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center gap-3">
+                  <MapPin className="h-5 w-5 text-muted-foreground" />
+                  <div>
+                    <p className="font-medium">{lead.location}</p>
+                    {lead.address && (
+                      <p className="text-sm text-muted-foreground">{lead.address}</p>
+                    )}
+                  </div>
+                </div>
+
+                {lead.phone && (
+                  <div className="flex items-center gap-3">
+                    <Phone className="h-5 w-5 text-muted-foreground" />
+                    <div>
+                      <p className="font-medium">{formatPhoneNumber(lead.phone)}</p>
+                      <a
+                        href={getWhatsAppUrl(lead.phone)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-primary hover:underline"
+                      >
+                        Open in WhatsApp
+                      </a>
+                    </div>
+                  </div>
+                )}
+
+                {lead.email && (
+                  <div className="flex items-center gap-3">
+                    <Mail className="h-5 w-5 text-muted-foreground" />
+                    <a
+                      href={`mailto:${lead.email}`}
+                      className="font-medium hover:underline"
+                    >
+                      {lead.email}
+                    </a>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Online Presence */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Online Presence</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center gap-3">
+                  <Globe className="h-5 w-5 text-muted-foreground" />
+                  <div>
+                    {lead.website ? (
+                      <>
+                        <a
+                          href={lead.website}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-medium hover:underline flex items-center gap-1"
+                        >
+                          {lead.website}
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                        {lead.websiteQuality && (
+                          <p className="text-sm text-muted-foreground">
+                            Quality Score: {lead.websiteQuality}/100
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-green-600 font-medium">No website - Great prospect!</p>
+                    )}
+                  </div>
+                </div>
+
+                {lead.googleRating && (
+                  <div className="flex items-center gap-3">
+                    <Star className="h-5 w-5 text-yellow-500 fill-yellow-500" />
+                    <div>
+                      <p className="font-medium">{lead.googleRating} stars</p>
+                      <p className="text-sm text-muted-foreground">
+                        {lead.reviewCount} reviews on Google
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {lead.googleMapsUrl && (
+                  <a
+                    href={lead.googleMapsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-primary hover:underline flex items-center gap-1"
+                  >
+                    View on Google Maps
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+
+                {lead.facebookUrl && (
+                  <div className="flex items-center gap-3">
+                    <Facebook className="h-5 w-5 text-blue-600" />
+                    <a
+                      href={lead.facebookUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-medium hover:underline flex items-center gap-1"
+                    >
+                      Facebook Page
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Notes */}
+          {lead.notes && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Notes</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="whitespace-pre-wrap">{lead.notes}</p>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Generate Message Actions */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Generate Message</CardTitle>
+              <CardDescription>
+                Use AI to generate a personalized outreach message
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex gap-4">
+              <Button
+                onClick={() => handleGenerateMessage('WHATSAPP')}
+                disabled={isGenerating || !lead.phone}
+              >
+                {isGenerating && generatingType === 'WHATSAPP' ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4 mr-2" />
+                )}
+                Generate WhatsApp Message
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => handleGenerateMessage('EMAIL')}
+                disabled={isGenerating}
+              >
+                {isGenerating && generatingType === 'EMAIL' ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4 mr-2" />
+                )}
+                Generate Email
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Messages Tab */}
+        <TabsContent value="messages" className="space-y-4">
+          {pendingMessages.length > 0 && (
+            <div className="space-y-4">
+              <h3 className="font-semibold">Pending Messages</h3>
+              {pendingMessages.map((message) => (
+                <ApprovalGate
+                  key={message.id}
+                  message={{ ...message, lead }}
+                />
+              ))}
+            </div>
+          )}
+
+          {sentMessages.length > 0 && (
+            <div className="space-y-4">
+              <h3 className="font-semibold">Sent Messages</h3>
+              {sentMessages.map((message) => (
+                <MessagePreview
+                  key={message.id}
+                  message={{ ...message, lead }}
+                />
+              ))}
+            </div>
+          )}
+
+          {lead.messages.length === 0 && (
+            <Card>
+              <CardContent className="py-8 text-center text-muted-foreground">
+                <MessageSquare className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                <p>No messages yet. Generate a message to get started.</p>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+
+        {/* History Tab */}
+        <TabsContent value="history">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Status History</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {lead.statusHistory.length > 0 ? (
+                <div className="space-y-4">
+                  {lead.statusHistory.map((entry) => (
+                    <div key={entry.id} className="flex items-start gap-4">
+                      <div className="w-2 h-2 mt-2 rounded-full bg-primary" />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className={leadStatusColors[entry.fromStatus]}>
+                            {leadStatusLabels[entry.fromStatus]}
+                          </Badge>
+                          <span className="text-muted-foreground">→</span>
+                          <Badge variant="outline" className={leadStatusColors[entry.toStatus]}>
+                            {leadStatusLabels[entry.toStatus]}
+                          </Badge>
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {formatDateTime(entry.changedAt)}
+                          {entry.changedBy && ` by ${entry.changedBy.name || entry.changedBy.email}`}
+                        </p>
+                        {entry.notes && (
+                          <p className="text-sm mt-1">{entry.notes}</p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="py-8 text-center text-muted-foreground">
+                  <History className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                  <p>No status changes yet.</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

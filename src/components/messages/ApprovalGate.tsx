@@ -1,0 +1,293 @@
+'use client';
+
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
+import { Separator } from '@/components/ui/separator';
+import { formatPhoneNumber, getWhatsAppUrl } from '@/lib/utils';
+import { Lead, Message } from '@prisma/client';
+import {
+    AlertTriangle,
+    CheckCircle,
+    Copy,
+    ExternalLink,
+    Globe,
+    Mail,
+    MapPin,
+    Phone,
+    Smartphone,
+    Star,
+    XCircle,
+} from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
+
+interface MessageWithLead extends Message {
+  lead: Lead;
+}
+
+interface ApprovalGateProps {
+  message: MessageWithLead;
+  onApprove?: () => void;
+  onReject?: () => void;
+}
+
+export function ApprovalGate({ message, onApprove, onReject }: ApprovalGateProps) {
+  const router = useRouter();
+  const [isApproving, setIsApproving] = useState(false);
+  const [isRejecting, setIsRejecting] = useState(false);
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const { lead } = message;
+  const isWhatsApp = message.type === 'WHATSAPP';
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(message.content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleApprove = async () => {
+    setIsApproving(true);
+    try {
+      const response = await fetch(`/api/messages/${message.id}/approve`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) throw new Error('Failed to approve');
+
+      onApprove?.();
+      router.refresh();
+    } catch (error) {
+      console.error('Error approving message:', error);
+    } finally {
+      setIsApproving(false);
+      setShowConfirmDialog(false);
+    }
+  };
+
+  const handleMarkAsSent = async () => {
+    setIsApproving(true);
+    try {
+      const response = await fetch(`/api/messages/${message.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'SENT' }),
+      });
+
+      if (!response.ok) throw new Error('Failed to mark as sent');
+
+      onApprove?.();
+      router.refresh();
+    } catch (error) {
+      console.error('Error marking message as sent:', error);
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
+  const handleReject = async () => {
+    setIsRejecting(true);
+    try {
+      const response = await fetch(`/api/messages/${message.id}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) throw new Error('Failed to reject');
+
+      onReject?.();
+      router.refresh();
+    } catch (error) {
+      console.error('Error rejecting message:', error);
+    } finally {
+      setIsRejecting(false);
+    }
+  };
+
+  const openWhatsApp = () => {
+    if (lead.phone) {
+      window.open(getWhatsAppUrl(lead.phone, message.content), '_blank');
+    }
+  };
+
+  return (
+    <Card className="border-2 border-primary/20">
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-5 w-5 text-yellow-500" />
+            <CardTitle>Review Before Sending</CardTitle>
+          </div>
+          <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-200">
+            Pending Approval
+          </Badge>
+        </div>
+        <CardDescription>
+          Please review the message and lead details before approving to send.
+        </CardDescription>
+      </CardHeader>
+
+      <CardContent className="space-y-6">
+        {/* Lead Summary */}
+        <div className="bg-muted/50 rounded-lg p-4">
+          <h4 className="font-semibold mb-3">Lead Information</h4>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <span className="text-muted-foreground">Business:</span>
+              <p className="font-medium">{lead.businessName}</p>
+            </div>
+            {lead.industry && (
+              <div>
+                <span className="text-muted-foreground">Industry:</span>
+                <p className="font-medium">{lead.industry}</p>
+              </div>
+            )}
+            <div className="flex items-center gap-1">
+              <MapPin className="h-4 w-4 text-muted-foreground" />
+              <span>{lead.location}</span>
+            </div>
+            {lead.phone && (
+              <div className="flex items-center gap-1">
+                <Phone className="h-4 w-4 text-muted-foreground" />
+                <span>{formatPhoneNumber(lead.phone)}</span>
+              </div>
+            )}
+            {lead.googleRating && (
+              <div className="flex items-center gap-1">
+                <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+                <span>
+                  {lead.googleRating} ({lead.reviewCount} reviews)
+                </span>
+              </div>
+            )}
+            <div className="flex items-center gap-1">
+              <Globe className="h-4 w-4 text-muted-foreground" />
+              <span>{lead.website ? 'Has website' : 'No website'}</span>
+            </div>
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* Message Preview */}
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            {isWhatsApp ? (
+              <Smartphone className="h-5 w-5 text-green-600" />
+            ) : (
+              <Mail className="h-5 w-5 text-blue-600" />
+            )}
+            <h4 className="font-semibold">
+              {isWhatsApp ? 'WhatsApp Message' : 'Email Message'}
+            </h4>
+          </div>
+
+          {message.subject && (
+            <div className="mb-3">
+              <span className="text-sm text-muted-foreground">Subject:</span>
+              <p className="font-medium">{message.subject}</p>
+            </div>
+          )}
+
+          <div className="bg-white border rounded-lg p-4 max-h-[300px] overflow-y-auto">
+            <pre className="whitespace-pre-wrap font-sans text-sm">
+              {message.content}
+            </pre>
+          </div>
+          <p className="text-xs text-muted-foreground mt-2">
+            {message.content.length} characters
+          </p>
+        </div>
+      </CardContent>
+
+      <CardFooter className="flex flex-col gap-4">
+        {/* Quick Actions */}
+        <div className="w-full flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={handleCopy}>
+            <Copy className="h-4 w-4 mr-2" />
+            {copied ? 'Copied!' : 'Copy Message'}
+          </Button>
+          {isWhatsApp && lead.phone && (
+            <Button variant="outline" size="sm" onClick={openWhatsApp}>
+              <ExternalLink className="h-4 w-4 mr-2" />
+              Open in WhatsApp
+            </Button>
+          )}
+        </div>
+
+        <Separator />
+
+        {/* Approval Actions */}
+        <div className="w-full flex justify-between gap-4">
+          <Button
+            variant="destructive"
+            onClick={handleReject}
+            disabled={isRejecting || isApproving}
+          >
+            <XCircle className="h-4 w-4 mr-2" />
+            {isRejecting ? 'Rejecting...' : 'Reject'}
+          </Button>
+
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setShowConfirmDialog(true)}
+              disabled={isApproving || isRejecting}
+            >
+              <CheckCircle className="h-4 w-4 mr-2" />
+              {isApproving ? 'Approving...' : 'Approve'}
+            </Button>
+
+            {isWhatsApp && lead.phone && (
+              <Button
+                variant="default"
+                onClick={() => {
+                  openWhatsApp();
+                  handleMarkAsSent();
+                }}
+                disabled={isApproving || isRejecting}
+              >
+                <ExternalLink className="h-4 w-4 mr-2" />
+                Send via WhatsApp
+              </Button>
+            )}
+          </div>
+        </div>
+      </CardFooter>
+
+      {/* Confirmation Dialog */}
+      <Dialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm Approval</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to approve this message? Once approved, you
+              can proceed to send it to the business.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowConfirmDialog(false)}
+              disabled={isApproving}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleApprove} disabled={isApproving}>
+              {isApproving ? 'Approving...' : 'Confirm Approval'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+}

@@ -1,0 +1,42 @@
+// South African cities for targeting
+export const SA_CITIES = [
+  'Johannesburg',
+  'Cape Town',
+  'Durban',
+  'Pretoria',
+  'Port Elizabeth',
+  'Bloemfontein',
+  'East London',
+  'Nelspruit',
+  'Polokwane',
+  'Kimberley',
+  'Pietermaritzburg',
+  'Centurion',
+  'Sandton',
+  'Soweto',
+  'Benoni',
+];
+
+// Target business categories
+export const TARGET_CATEGORIES = [
+  'Plumber',
+  'Electrician',
+  'Painter',
+  'Landscaper',
+  'Cleaner',
+  'Caterer',
+  'Photographer',
+  'Personal Trainer',
+  'Beauty Salon',
+  'Auto Mechanic',
+  'Carpenter',
+  'Locksmith',
+  'Pest Control',
+  'Moving Company',
+  'Tutoring Service',
+  'Event Planner',
+  'Interior Designer',
+  'Florist',
+  'Pet Groomer',
+  'Handyman',
+];

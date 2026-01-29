@@ -1,0 +1,240 @@
+'use client';
+
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
+import { Textarea } from '@/components/ui/textarea';
+import { formatPhoneNumber, getWhatsAppUrl } from '@/lib/utils';
+import { Lead, Message } from '@prisma/client';
+import {
+    Check,
+    Copy,
+    Edit2,
+    ExternalLink,
+    Mail,
+    RefreshCw,
+    Smartphone,
+} from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
+
+interface MessageWithLead extends Message {
+  lead: Lead;
+}
+
+interface MessagePreviewProps {
+  message: MessageWithLead;
+  onUpdate?: () => void;
+}
+
+export function MessagePreview({ message, onUpdate }: MessagePreviewProps) {
+  const router = useRouter();
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedContent, setEditedContent] = useState(message.content);
+  const [copied, setCopied] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const isWhatsApp = message.type === 'WHATSAPP';
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(message.content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      const response = await fetch(`/api/messages/${message.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: editedContent }),
+      });
+
+      if (!response.ok) throw new Error('Failed to save');
+
+      setIsEditing(false);
+      onUpdate?.();
+      router.refresh();
+    } catch (error) {
+      console.error('Error saving message:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleRegenerate = async () => {
+    setIsRegenerating(true);
+    try {
+      const response = await fetch('/api/ai/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          leadId: message.lead.id,
+          type: message.type,
+          useAI: true,
+          saveMessage: false,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to regenerate');
+
+      const data = await response.json();
+      setEditedContent(data.content);
+      setIsEditing(true);
+    } catch (error) {
+      console.error('Error regenerating message:', error);
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
+  const openWhatsApp = () => {
+    if (message.lead.phone) {
+      window.open(getWhatsAppUrl(message.lead.phone, message.content), '_blank');
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {isWhatsApp ? (
+              <Smartphone className="h-5 w-5 text-green-600" />
+            ) : (
+              <Mail className="h-5 w-5 text-blue-600" />
+            )}
+            <CardTitle className="text-lg">
+              {isWhatsApp ? 'WhatsApp Message' : 'Email Message'}
+            </CardTitle>
+          </div>
+          <Badge
+            variant={message.status === 'APPROVED' ? 'default' : 'secondary'}
+          >
+            {message.status}
+          </Badge>
+        </div>
+        <div className="text-sm text-muted-foreground">
+          To: <span className="font-medium">{message.lead.businessName}</span>
+          {message.lead.phone && isWhatsApp && (
+            <span> ({formatPhoneNumber(message.lead.phone)})</span>
+          )}
+          {message.lead.email && !isWhatsApp && (
+            <span> ({message.lead.email})</span>
+          )}
+        </div>
+      </CardHeader>
+
+      <CardContent>
+        {message.subject && (
+          <div className="mb-3">
+            <span className="text-sm font-medium text-muted-foreground">
+              Subject:
+            </span>
+            <p className="font-medium">{message.subject}</p>
+          </div>
+        )}
+
+        <div className="bg-muted/50 rounded-lg p-4 mb-4">
+          <pre className="whitespace-pre-wrap font-sans text-sm">
+            {message.content}
+          </pre>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={handleCopy}>
+            {copied ? (
+              <>
+                <Check className="h-4 w-4 mr-2" />
+                Copied!
+              </>
+            ) : (
+              <>
+                <Copy className="h-4 w-4 mr-2" />
+                Copy
+              </>
+            )}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setEditedContent(message.content);
+              setIsEditing(true);
+            }}
+          >
+            <Edit2 className="h-4 w-4 mr-2" />
+            Edit
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRegenerate}
+            disabled={isRegenerating}
+          >
+            <RefreshCw
+              className={`h-4 w-4 mr-2 ${isRegenerating ? 'animate-spin' : ''}`}
+            />
+            Regenerate
+          </Button>
+
+          {isWhatsApp && message.lead.phone && (
+            <Button variant="default" size="sm" onClick={openWhatsApp}>
+              <ExternalLink className="h-4 w-4 mr-2" />
+              Open in WhatsApp
+            </Button>
+          )}
+        </div>
+      </CardContent>
+
+      {/* Edit Dialog */}
+      <Dialog open={isEditing} onOpenChange={setIsEditing}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit Message</DialogTitle>
+            <DialogDescription>
+              Modify the message content before sending.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-4">
+            <Textarea
+              value={editedContent}
+              onChange={(e) => setEditedContent(e.target.value)}
+              rows={12}
+              className="font-mono text-sm"
+            />
+            <p className="text-xs text-muted-foreground mt-2">
+              {editedContent.length} characters
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsEditing(false)}
+              disabled={isSaving}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleSave} disabled={isSaving}>
+              {isSaving ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+}

@@ -1,0 +1,279 @@
+'use client';
+
+import { Header } from '@/components/layout/Header';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
+import { Slider } from '@/components/ui/slider';
+import { formatDateTime } from '@/lib/utils';
+import { CheckCircle, Clock, Loader2, Play, Search, XCircle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+
+interface ScrapingJob {
+  id: string;
+  status: string;
+  leadsRequested: number;
+  leadsFound: number;
+  categories: string[];
+  locations: string[];
+  scheduledFor: string;
+  completedAt: string | null;
+  error: string | null;
+}
+
+export default function ScraperPage() {
+  const [jobs, setJobs] = useState<ScrapingJob[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
+  const [cities, setCities] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Form state
+  const [leadsRequested, setLeadsRequested] = useState(10);
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedCity, setSelectedCity] = useState<string>('all');
+  const [minRating, setMinRating] = useState(4.0);
+
+  useEffect(() => {
+    fetchJobs();
+  }, []);
+
+  const fetchJobs = async () => {
+    try {
+      const response = await fetch('/api/scraper');
+      const data = await response.json();
+      setJobs(data.jobs || []);
+      setCategories(data.availableCategories || []);
+      setCities(data.availableCities || []);
+    } catch (error) {
+      console.error('Error fetching jobs:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleStartScraping = async () => {
+    setIsSubmitting(true);
+    try {
+      const response = await fetch('/api/scraper', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          leadsRequested,
+          categories: selectedCategory === 'all' ? [] : [selectedCategory],
+          locations: selectedCity === 'all' ? [] : [selectedCity],
+          minRating,
+          runImmediately: true,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to start scraping');
+
+      await fetchJobs();
+    } catch (error) {
+      console.error('Error starting scraping:', error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'COMPLETED':
+        return <CheckCircle className="h-4 w-4 text-green-500" />;
+      case 'RUNNING':
+        return <Loader2 className="h-4 w-4 text-blue-500 animate-spin" />;
+      case 'FAILED':
+        return <XCircle className="h-4 w-4 text-red-500" />;
+      default:
+        return <Clock className="h-4 w-4 text-yellow-500" />;
+    }
+  };
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'COMPLETED':
+        return <Badge className="bg-green-100 text-green-800">Completed</Badge>;
+      case 'RUNNING':
+        return <Badge className="bg-blue-100 text-blue-800">Running</Badge>;
+      case 'FAILED':
+        return <Badge className="bg-red-100 text-red-800">Failed</Badge>;
+      case 'SCHEDULED':
+        return <Badge className="bg-yellow-100 text-yellow-800">Scheduled</Badge>;
+      default:
+        return <Badge variant="secondary">{status}</Badge>;
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full">
+      <Header
+        title="Lead Scraper"
+        description="Find new businesses to contact using AI-powered search"
+      />
+
+      <div className="flex-1 p-6 overflow-y-auto space-y-6">
+        {/* New Scraping Job */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Find New Leads</CardTitle>
+            <CardDescription>
+              Configure and start a new lead scraping job. The AI will search
+              Google Maps for businesses that match your criteria.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="space-y-2">
+                <Label>Number of Leads</Label>
+                <div className="flex items-center gap-4">
+                  <Slider
+                    value={[leadsRequested]}
+                    onValueChange={(v) => setLeadsRequested(v[0])}
+                    min={5}
+                    max={50}
+                    step={5}
+                    className="flex-1"
+                  />
+                  <span className="w-12 text-center font-medium">
+                    {leadsRequested}
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Industry Category</Label>
+                <Select value={selectedCategory} onValueChange={setSelectedCategory}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Categories</SelectItem>
+                    {categories.map((cat) => (
+                      <SelectItem key={cat} value={cat}>
+                        {cat}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>City/Location</Label>
+                <Select value={selectedCity} onValueChange={setSelectedCity}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Cities</SelectItem>
+                    {cities.map((city) => (
+                      <SelectItem key={city} value={city}>
+                        {city}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Min Google Rating</Label>
+                <div className="flex items-center gap-4">
+                  <Slider
+                    value={[minRating]}
+                    onValueChange={(v) => setMinRating(v[0])}
+                    min={3}
+                    max={5}
+                    step={0.5}
+                    className="flex-1"
+                  />
+                  <span className="w-12 text-center font-medium">
+                    {minRating}+
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <Button
+              onClick={handleStartScraping}
+              disabled={isSubmitting}
+              className="w-full md:w-auto"
+            >
+              {isSubmitting ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Play className="h-4 w-4 mr-2" />
+              )}
+              Start Scraping
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* Recent Jobs */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Recent Jobs</CardTitle>
+            <CardDescription>
+              View the status and results of your scraping jobs
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : jobs.length > 0 ? (
+              <div className="space-y-4">
+                {jobs.map((job) => (
+                  <div
+                    key={job.id}
+                    className="flex items-center justify-between p-4 border rounded-lg"
+                  >
+                    <div className="flex items-center gap-4">
+                      {getStatusIcon(job.status)}
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">
+                            {job.leadsFound} / {job.leadsRequested} leads
+                          </span>
+                          {getStatusBadge(job.status)}
+                        </div>
+                        <p className="text-sm text-muted-foreground">
+                          {job.categories.length > 0
+                            ? job.categories.join(', ')
+                            : 'All categories'}{' '}
+                          in{' '}
+                          {job.locations.length > 0
+                            ? job.locations.join(', ')
+                            : 'All cities'}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right text-sm text-muted-foreground">
+                      <p>{formatDateTime(job.scheduledFor)}</p>
+                      {job.error && (
+                        <p className="text-red-500 text-xs mt-1">{job.error}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">
+                <Search className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                <p>No scraping jobs yet. Start one above!</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}

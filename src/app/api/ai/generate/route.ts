@@ -1,0 +1,112 @@
+import { generatePersonalizedMessage, quickPersonalize } from '@/lib/ai/personalize';
+import { auth } from '@/lib/auth';
+import { prisma } from '@/lib/db';
+import { MessageType } from '@prisma/client';
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+
+// Validation schema
+const generateMessageSchema = z.object({
+  leadId: z.string().min(1, 'Lead ID is required'),
+  type: z.nativeEnum(MessageType),
+  useAI: z.boolean().default(true),
+  saveMessage: z.boolean().default(true),
+});
+
+// POST /api/ai/generate - Generate a personalized message for a lead
+export async function POST(request: NextRequest) {
+  try {
+    const session = await auth();
+    if (!session?.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    if (session.user.role === 'VIEWER') {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 }
+      );
+    }
+
+    const body = await request.json();
+    const { leadId, type, useAI, saveMessage } = generateMessageSchema.parse(body);
+
+    // Get the lead
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+    });
+
+    if (!lead) {
+      return NextResponse.json({ error: 'Lead not found' }, { status: 404 });
+    }
+
+    let content: string;
+    let subject: string | undefined;
+    let provider: string = 'template';
+    let model: string = 'none';
+
+    if (useAI) {
+      try {
+        const result = await generatePersonalizedMessage({
+          lead,
+          messageType: type,
+        });
+        content = result.content;
+        subject = result.subject;
+        provider = result.provider;
+        model = result.model;
+      } catch (aiError) {
+        console.error('AI generation failed, falling back to template:', aiError);
+        content = quickPersonalize(lead, type);
+      }
+    } else {
+      content = quickPersonalize(lead, type);
+    }
+
+    // Optionally save the message
+    let message = null;
+    if (saveMessage) {
+      message = await prisma.message.create({
+        data: {
+          leadId,
+          type,
+          subject,
+          content,
+          status: 'DRAFT',
+        },
+        include: {
+          lead: true,
+        },
+      });
+
+      // Update lead status to MESSAGE_READY if still NEW or QUALIFIED
+      if (lead.status === 'NEW' || lead.status === 'QUALIFIED') {
+        await prisma.lead.update({
+          where: { id: leadId },
+          data: { status: 'MESSAGE_READY' },
+        });
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      content,
+      subject,
+      provider,
+      model,
+      message,
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Validation failed', details: error.errors },
+        { status: 400 }
+      );
+    }
+    console.error('Error generating message:', error);
+    return NextResponse.json(
+      { error: 'Failed to generate message' },
+      { status: 500 }
+    );
+  }
+}
