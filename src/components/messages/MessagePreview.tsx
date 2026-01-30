@@ -193,7 +193,7 @@ export function MessagePreview({ message, onUpdate }: MessagePreviewProps) {
         )}
 
         <div className="bg-muted/50 rounded-lg p-4 mb-4">
-          <pre className="whitespace-pre-wrap font-sans text-sm">
+          <pre className="whitespace-pre-wrap font-sans text-sm text-foreground">
             {message.content}
           </pre>
         </div>

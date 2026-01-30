@@ -6,19 +6,27 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { modelOptions, providerDisplayNames } from '@/lib/ai/providers';
-import { AIProvider } from '@prisma/client';
-import { Brain, ExternalLink, Loader2, MessageSquare, Save, Search } from 'lucide-react';
+import { modelOptions } from '@/lib/ai/providers';
+import { Brain, Check, ExternalLink, Key, Loader2, MessageSquare, Save, Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
+
+interface ProviderStatus {
+  provider: string;
+  name: string;
+  isAvailable: boolean;
+  maskedToken: string | null;
+  setupUrl: string;
+  envKey: string;
+}
 
 interface SystemSettings {
   dailyLeadTarget: number;
@@ -36,7 +44,7 @@ interface SystemSettings {
 interface AIConfig {
   id: string;
   name: string;
-  provider: AIProvider;
+  provider: string;
   model: string;
   temperature: number;
   maxTokens: number;
@@ -46,14 +54,14 @@ interface AIConfig {
 export default function SettingsPage() {
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [aiConfigs, setAIConfigs] = useState<AIConfig[]>([]);
-  const [availableProviders, setAvailableProviders] = useState<AIProvider[]>([]);
+  const [providerStatuses, setProviderStatuses] = useState<ProviderStatus[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
   // AI config form state
-  const [newProvider, setNewProvider] = useState<AIProvider>('OPENAI');
-  const [newModel, setNewModel] = useState('gpt-4o-mini');
-  const [newTemperature, setNewTemperature] = useState(0.7);
+  const [selectedProvider, setSelectedProvider] = useState<string>('CURSOR');
+  const [selectedModel, setSelectedModel] = useState(modelOptions[0].value);
+  const [temperature, setTemperature] = useState(0.7);
 
   useEffect(() => {
     fetchData();
@@ -71,7 +79,15 @@ export default function SettingsPage() {
 
       setSettings(settingsData);
       setAIConfigs(aiData.configs || []);
-      setAvailableProviders(aiData.availableProviders || []);
+      setProviderStatuses(aiData.providerStatuses || []);
+      
+      // Set default provider to first available
+      if (aiData.providerStatuses?.length > 0) {
+        const firstAvailable = aiData.providerStatuses.find((p: ProviderStatus) => p.isAvailable);
+        if (firstAvailable) {
+          setSelectedProvider(firstAvailable.provider);
+        }
+      }
     } catch (error) {
       console.error('Error fetching settings:', error);
     } finally {
@@ -99,16 +115,19 @@ export default function SettingsPage() {
   };
 
   const handleCreateAIConfig = async () => {
+    const providerName = providerStatuses.find(p => p.provider === selectedProvider)?.name || selectedProvider;
+    const modelLabel = modelOptions.find(m => m.value === selectedModel)?.label || selectedModel;
+    
     setIsSaving(true);
     try {
       const response = await fetch('/api/ai/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: `${providerDisplayNames[newProvider]} - ${newModel}`,
-          provider: newProvider,
-          model: newModel,
-          temperature: newTemperature,
+          name: `${providerName} - ${modelLabel}`,
+          provider: selectedProvider,
+          model: selectedModel,
+          temperature,
           isActive: aiConfigs.length === 0,
         }),
       });
@@ -142,6 +161,25 @@ export default function SettingsPage() {
     }
   };
 
+  const handleDeleteConfig = async (configId: string) => {
+    setIsSaving(true);
+    try {
+      const response = await fetch('/api/ai/config', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: configId }),
+      });
+
+      if (!response.ok) throw new Error('Failed to delete AI config');
+
+      await fetchData();
+    } catch (error) {
+      console.error('Error deleting AI config:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex flex-col h-full">
@@ -152,6 +190,8 @@ export default function SettingsPage() {
       </div>
     );
   }
+
+  const availableProviders = providerStatuses.filter(p => p.isAvailable);
 
   return (
     <div className="flex flex-col h-full">
@@ -176,100 +216,99 @@ export default function SettingsPage() {
 
           {/* AI Configuration Tab */}
           <TabsContent value="ai" className="space-y-4">
-            {/* API Keys Help Card */}
-            <Card className="border-dashed border-muted-foreground/30">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">API Keys Setup</CardTitle>
+            {/* Provider Status Cards */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Key className="h-5 w-5" />
+                  API Keys
+                </CardTitle>
                 <CardDescription>
-                  Add your API keys to the <code className="bg-muted px-1.5 py-0.5 rounded text-xs">.env</code> file to enable providers:
+                  Configure your AI provider API keys in the <code className="bg-muted px-1.5 py-0.5 rounded text-xs">.env</code> file
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
-                  <div className="space-y-1">
-                    <div className="font-medium flex items-center gap-2">
-                      OpenAI
-                      <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" className="text-muted-foreground hover:text-primary">
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
+                <div className="grid gap-4">
+                  {providerStatuses.map((status) => (
+                    <div
+                      key={status.provider}
+                      className={`flex items-center justify-between p-4 rounded-lg border ${
+                        status.isAvailable 
+                          ? 'border-green-500/30 bg-green-500/5' 
+                          : 'border-muted'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className={`w-2 h-2 rounded-full ${
+                          status.isAvailable ? 'bg-green-500' : 'bg-muted-foreground/30'
+                        }`} />
+                        <div>
+                          <div className="font-medium">{status.name}</div>
+                          <code className="text-xs text-muted-foreground">
+                            {status.envKey}
+                          </code>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        {status.isAvailable ? (
+                          <>
+                            <code className="text-xs bg-muted px-2 py-1 rounded font-mono">
+                              {status.maskedToken}
+                            </code>
+                            <Badge variant="default" className="bg-green-600">
+                              <Check className="h-3 w-3 mr-1" />
+                              Connected
+                            </Badge>
+                          </>
+                        ) : (
+                          <a
+                            href={status.setupUrl}
+                            target="_blank"
+                            rel="noopener"
+                            className="text-sm text-blue-500 hover:text-blue-400 flex items-center gap-1"
+                          >
+                            Get API Key
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        )}
+                      </div>
                     </div>
-                    <code className="text-xs text-muted-foreground">OPENAI_API_KEY=sk-...</code>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="font-medium flex items-center gap-2">
-                      Anthropic
-                      <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" className="text-muted-foreground hover:text-primary">
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    </div>
-                    <code className="text-xs text-muted-foreground">ANTHROPIC_API_KEY=sk-ant-...</code>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="font-medium flex items-center gap-2">
-                      Google AI
-                      <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" className="text-muted-foreground hover:text-primary">
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    </div>
-                    <code className="text-xs text-muted-foreground">GOOGLE_AI_API_KEY=AI...</code>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="font-medium flex items-center gap-2">
-                      GitHub Copilot
-                      <a href="https://github.com/settings/tokens" target="_blank" rel="noopener" className="text-muted-foreground hover:text-primary">
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    </div>
-                    <code className="text-xs text-muted-foreground">GITHUB_TOKEN=ghp_...</code>
-                    <p className="text-xs text-muted-foreground">Requires Copilot subscription</p>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="font-medium flex items-center gap-2">
-                      Cursor AI
-                      <a href="https://cursor.sh" target="_blank" rel="noopener" className="text-muted-foreground hover:text-primary">
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    </div>
-                    <code className="text-xs text-muted-foreground">CURSOR_API_KEY=...</code>
-                    <p className="text-xs text-muted-foreground">From Cursor IDE settings</p>
-                  </div>
+                  ))}
                 </div>
               </CardContent>
             </Card>
 
+            {/* AI Configurations */}
             <Card>
               <CardHeader>
-                <CardTitle>AI Provider Configuration</CardTitle>
+                <CardTitle>Active Configuration</CardTitle>
                 <CardDescription>
-                  Configure which AI provider to use for message generation.
-                  You can switch between providers without losing your settings.
+                  Select which AI provider and model to use for message generation
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
                 {/* Existing Configs */}
                 {aiConfigs.length > 0 && (
                   <div className="space-y-2">
-                    <Label>Active Configuration</Label>
-                    <div className="space-y-2">
-                      {aiConfigs.map((config) => (
-                        <div
-                          key={config.id}
-                          className={`flex items-center justify-between p-3 rounded-lg border ${
-                            config.isActive ? 'border-primary bg-primary/5' : ''
-                          }`}
-                        >
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium">{config.name}</span>
-                              {config.isActive && (
-                                <Badge variant="default">Active</Badge>
-                              )}
-                            </div>
-                            <p className="text-sm text-muted-foreground">
-                              Temperature: {config.temperature} | Max tokens:{' '}
-                              {config.maxTokens}
-                            </p>
+                    {aiConfigs.map((config) => (
+                      <div
+                        key={config.id}
+                        className={`flex items-center justify-between p-4 rounded-lg border ${
+                          config.isActive ? 'border-primary bg-primary/5' : ''
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{config.name}</span>
+                            {config.isActive && (
+                              <Badge variant="default">Default</Badge>
+                            )}
                           </div>
+                          <p className="text-sm text-muted-foreground">
+                            Temperature: {config.temperature} | Max tokens: {config.maxTokens}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
                           {!config.isActive && (
                             <Button
                               variant="outline"
@@ -277,86 +316,88 @@ export default function SettingsPage() {
                               onClick={() => handleSetActiveConfig(config.id)}
                               disabled={isSaving}
                             >
-                              Activate
+                              Set Default
                             </Button>
                           )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteConfig(config.id)}
+                            disabled={isSaving}
+                            className="text-destructive hover:text-destructive"
+                          >
+                            Remove
+                          </Button>
                         </div>
-                      ))}
-                    </div>
+                      </div>
+                    ))}
                   </div>
                 )}
 
                 {/* Add New Config */}
-                <div className="space-y-4 pt-4 border-t">
-                  <Label className="text-base">Add New Configuration</Label>
-
-                  {availableProviders.length === 0 ? (
-                    <p className="text-muted-foreground">
-                      No API keys configured. Please add your API keys to the
-                      .env file.
-                    </p>
-                  ) : (
-                    <>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="space-y-2">
-                          <Label>Provider</Label>
-                          <Select
-                            value={newProvider}
-                            onValueChange={(v) => {
-                              setNewProvider(v as AIProvider);
-                              setNewModel(modelOptions[v as AIProvider][0].value);
-                            }}
-                          >
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {availableProviders.map((provider) => (
-                                <SelectItem key={provider} value={provider}>
-                                  {providerDisplayNames[provider]}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label>Model</Label>
-                          <Select value={newModel} onValueChange={setNewModel}>
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {modelOptions[newProvider]?.map((model) => (
-                                <SelectItem key={model.value} value={model.value}>
-                                  {model.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label>Temperature ({newTemperature})</Label>
-                          <Slider
-                            value={[newTemperature]}
-                            onValueChange={(v) => setNewTemperature(v[0])}
-                            min={0}
-                            max={1}
-                            step={0.1}
-                          />
-                        </div>
+                {availableProviders.length > 0 ? (
+                  <div className="space-y-4 pt-4 border-t">
+                    <Label className="text-base">Add Configuration</Label>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="space-y-2">
+                        <Label>Provider</Label>
+                        <Select
+                          value={selectedProvider}
+                          onValueChange={setSelectedProvider}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {availableProviders.map((provider) => (
+                              <SelectItem key={provider.provider} value={provider.provider}>
+                                {provider.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
 
-                      <Button onClick={handleCreateAIConfig} disabled={isSaving}>
-                        {isSaving && (
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        )}
-                        Add Configuration
-                      </Button>
-                    </>
-                  )}
-                </div>
+                      <div className="space-y-2">
+                        <Label>Model</Label>
+                        <Select value={selectedModel} onValueChange={setSelectedModel}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {modelOptions.map((model) => (
+                              <SelectItem key={model.value} value={model.value}>
+                                {model.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Temperature ({temperature})</Label>
+                        <Slider
+                          value={[temperature]}
+                          onValueChange={(v) => setTemperature(v[0])}
+                          min={0}
+                          max={1}
+                          step={0.1}
+                        />
+                      </div>
+                    </div>
+
+                    <Button onClick={handleCreateAIConfig} disabled={isSaving}>
+                      {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Add Configuration
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Key className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                    <p>No API keys configured</p>
+                    <p className="text-sm">Add your API keys to the .env file to get started</p>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>

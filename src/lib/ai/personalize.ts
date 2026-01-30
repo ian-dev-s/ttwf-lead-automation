@@ -1,13 +1,13 @@
-import { AIProvider, Lead, MessageType } from '@prisma/client';
+import { Lead, MessageType } from '@prisma/client';
 import { generateText } from 'ai';
 import { prisma } from '../db';
 import { MESSAGE_SYSTEM_PROMPT, generateMessagePrompt, getGuardrailsPrompt } from './prompts';
-import { defaultModels, getLanguageModel } from './providers';
+import { defaultModel, getLanguageModel, type SimpleProvider } from './providers';
 
 export interface PersonalizeOptions {
   lead: Lead;
   messageType: MessageType;
-  provider?: AIProvider;
+  provider?: SimpleProvider;
   model?: string;
   temperature?: number;
   maxTokens?: number;
@@ -17,7 +17,7 @@ export interface PersonalizeOptions {
 export interface PersonalizedMessage {
   content: string;
   subject?: string;
-  provider: AIProvider;
+  provider: string;
   model: string;
   tokensUsed?: number;
 }
@@ -29,7 +29,7 @@ export async function generatePersonalizedMessage(
   const {
     lead,
     messageType,
-    provider = 'OPENAI',
+    provider = 'CURSOR',
     model,
     temperature = 0.7,
     maxTokens = 1000,
@@ -41,8 +41,8 @@ export async function generatePersonalizedMessage(
     where: { isActive: true },
   });
 
-  const finalProvider = activeConfig?.provider || provider;
-  const finalModel = activeConfig?.model || model || defaultModels[finalProvider];
+  const finalProvider = (activeConfig?.provider || provider) as SimpleProvider;
+  const finalModel = activeConfig?.model || model || defaultModel;
   const finalTemperature = activeConfig?.temperature ?? temperature;
   const finalMaxTokens = activeConfig?.maxTokens ?? maxTokens;
 
@@ -51,57 +51,81 @@ export async function generatePersonalizedMessage(
   const guardrailsAddition = getGuardrailsPrompt(guardrails);
   const fullPrompt = userPrompt + guardrailsAddition;
 
-  try {
-    // Generate the message using the AI SDK
-    const languageModel = getLanguageModel({
-      provider: finalProvider,
-      model: finalModel,
-    });
+  // Retry logic for network issues
+  const maxRetries = 3;
+  let lastError: Error | null = null;
 
-    const result = await generateText({
-      model: languageModel,
-      system: MESSAGE_SYSTEM_PROMPT,
-      prompt: fullPrompt,
-      temperature: finalTemperature,
-      maxTokens: finalMaxTokens,
-    });
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Generate the message using the AI SDK
+      const languageModel = getLanguageModel({
+        provider: finalProvider,
+        model: finalModel,
+      });
 
-    // Parse the result
-    let content = result.text.trim();
-    let subject: string | undefined;
+      const result = await generateText({
+        model: languageModel,
+        system: MESSAGE_SYSTEM_PROMPT,
+        prompt: fullPrompt,
+        temperature: finalTemperature,
+        maxTokens: finalMaxTokens,
+      });
 
-    // Extract subject line for emails
-    if (messageType === 'EMAIL') {
-      const subjectMatch = content.match(/^Subject:\s*(.+?)[\n\r]/i);
-      if (subjectMatch) {
-        subject = subjectMatch[1].trim();
-        content = content.replace(/^Subject:\s*.+?[\n\r]+/i, '').trim();
+      // Parse the result
+      let content = result.text.trim();
+      let subject: string | undefined;
+
+      // Extract subject line for emails
+      if (messageType === 'EMAIL') {
+        const subjectMatch = content.match(/^Subject:\s*(.+?)[\n\r]/i);
+        if (subjectMatch) {
+          subject = subjectMatch[1].trim();
+          content = content.replace(/^Subject:\s*.+?[\n\r]+/i, '').trim();
+        }
+      }
+
+      // Update AI config usage stats
+      if (activeConfig) {
+        await prisma.aIConfig.update({
+          where: { id: activeConfig.id },
+          data: {
+            requestsUsed: { increment: 1 },
+          },
+        });
+      }
+
+      return {
+        content,
+        subject,
+        provider: finalProvider,
+        model: finalModel,
+        tokensUsed: result.usage?.totalTokens,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      const isNetworkError = lastError.message.includes('socket') || 
+                            lastError.message.includes('TLS') ||
+                            lastError.message.includes('ECONNREFUSED') ||
+                            lastError.message.includes('network');
+      
+      console.error(`AI generation attempt ${attempt}/${maxRetries} failed:`, lastError.message);
+      
+      if (attempt < maxRetries && isNetworkError) {
+        // Exponential backoff: 1s, 2s, 4s
+        const delay = Math.pow(2, attempt - 1) * 1000;
+        console.log(`Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else if (!isNetworkError) {
+        // Non-network error, don't retry
+        break;
       }
     }
-
-    // Update AI config usage stats
-    if (activeConfig) {
-      await prisma.aIConfig.update({
-        where: { id: activeConfig.id },
-        data: {
-          requestsUsed: { increment: 1 },
-        },
-      });
-    }
-
-    return {
-      content,
-      subject,
-      provider: finalProvider,
-      model: finalModel,
-      tokensUsed: result.usage?.totalTokens,
-    };
-  } catch (error) {
-    console.error('Error generating personalized message:', error);
-    throw new Error(
-      `Failed to generate message: ${error instanceof Error ? error.message : 'Unknown error'}`
-    );
   }
+
+  console.error('All AI generation attempts failed:', lastError);
+  throw new Error(
+    `Failed to generate message: Failed after ${maxRetries} attempts. Last error: ${lastError?.message || 'Unknown error'}`
+  );
 }
 
 // Generate messages in batch for multiple leads

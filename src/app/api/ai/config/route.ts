@@ -1,14 +1,13 @@
-import { getAvailableProviders } from '@/lib/ai/providers';
+import { getProviderStatus, type SimpleProvider } from '@/lib/ai/providers';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { AIProvider } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
 // Validation schema for AI config
 const aiConfigSchema = z.object({
   name: z.string().min(1, 'Name is required'),
-  provider: z.nativeEnum(AIProvider),
+  provider: z.string().min(1, 'Provider is required'),
   model: z.string().min(1, 'Model is required'),
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().min(1).max(4000).optional(),
@@ -29,11 +28,13 @@ export async function GET(_request: NextRequest) {
       orderBy: { createdAt: 'desc' },
     });
 
-    const availableProviders = getAvailableProviders();
+    // Get status for each provider (GitHub and Cursor only)
+    const providers: SimpleProvider[] = ['GITHUB', 'CURSOR'];
+    const providerStatuses = providers.map(p => getProviderStatus(p));
 
     return NextResponse.json({
       configs,
-      availableProviders,
+      providerStatuses,
     });
   } catch (error) {
     console.error('Error fetching AI configs:', error);
@@ -72,7 +73,14 @@ export async function POST(request: NextRequest) {
     }
 
     const config = await prisma.aIConfig.create({
-      data: validatedData,
+      data: {
+        name: validatedData.name,
+        provider: validatedData.provider as 'GITHUB' | 'CURSOR',
+        model: validatedData.model,
+        temperature: validatedData.temperature ?? 0.7,
+        maxTokens: validatedData.maxTokens ?? 1000,
+        isActive: validatedData.isActive ?? false,
+      },
     });
 
     return NextResponse.json(config, { status: 201 });
@@ -139,6 +147,42 @@ export async function PATCH(request: NextRequest) {
     console.error('Error updating AI config:', error);
     return NextResponse.json(
       { error: 'Failed to update AI configuration' },
+      { status: 500 }
+    );
+  }
+}
+
+// DELETE /api/ai/config - Delete an AI configuration
+export async function DELETE(request: NextRequest) {
+  try {
+    const session = await auth();
+    if (!session?.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    if (session.user.role !== 'ADMIN') {
+      return NextResponse.json(
+        { error: 'Only administrators can manage AI configurations' },
+        { status: 403 }
+      );
+    }
+
+    const body = await request.json();
+    const { id } = body;
+
+    if (!id) {
+      return NextResponse.json({ error: 'Config ID is required' }, { status: 400 });
+    }
+
+    await prisma.aIConfig.delete({
+      where: { id },
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting AI config:', error);
+    return NextResponse.json(
+      { error: 'Failed to delete AI configuration' },
       { status: 500 }
     );
   }
