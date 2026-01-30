@@ -2,7 +2,8 @@
  * Script to scrape REAL South African businesses from Google Maps
  * Run with: npx tsx scripts/scrape-real-leads.ts
  * 
- * Optimized for stability and parallel execution
+ * Uses Google PageSpeed Insights API for website quality analysis
+ * With exponential backoff retry logic for API rate limits
  */
 
 import { PrismaClient } from '@prisma/client';
@@ -10,11 +11,20 @@ import { Browser, BrowserContext, chromium, Page } from 'playwright';
 
 const prisma = new PrismaClient();
 
-// Configuration - reduced for stability
-const PARALLEL_WORKERS = 5; // Single worker for debugging
-const MAX_RESULTS_PER_SEARCH = 100; // Reduced for testing
+// Configuration
+const PARALLEL_WORKERS = 1; // Single worker to avoid rate limits
+const MAX_RESULTS_PER_SEARCH = 10; // Limit per search
 const DELAY_BETWEEN_LISTINGS = 1000; // ms between clicking listings
-const DELAY_BETWEEN_SEARCHES = 1500; // ms between searches
+const DELAY_BETWEEN_SEARCHES = 2000; // ms between searches
+const TARGET_LEADS = 50; // Stop after this many leads are added
+
+// PageSpeed API retry configuration
+const PAGESPEED_MAX_RETRIES = 5;
+const PAGESPEED_INITIAL_BACKOFF_MS = 60000; // 1 minute initial backoff
+const DELAY_BETWEEN_API_CALLS = 2000; // 2 seconds between API calls
+
+// Flag to stop all workers if API fails permanently
+let stopAllWorkers = false;
 
 interface ScrapedBusiness {
   name: string;
@@ -103,6 +113,119 @@ function chunkArray<T>(array: T[], numChunks: number): T[][] {
     chunks[index % numChunks].push(item);
   });
   return chunks;
+}
+
+// Scrape emails from a website
+async function scrapeEmailsFromWebsite(
+  browser: Browser,
+  websiteUrl: string,
+  workerId: number
+): Promise<string[]> {
+  const emails: string[] = [];
+  let context: BrowserContext | null = null;
+  
+  try {
+    // Ensure URL has protocol
+    let url = websiteUrl;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = 'https://' + url;
+    }
+    
+    console.log(`   [Worker ${workerId}] 📧 Scraping emails from: ${url}`);
+    
+    context = await browser.newContext({
+      viewport: { width: 1920, height: 1080 },
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    });
+    
+    const page = await context.newPage();
+    page.setDefaultTimeout(15000);
+    
+    // Navigate to the website
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await sleep(1000); // Let page settle
+    
+    // Get page content and extract emails
+    const pageContent = await page.content();
+    
+    // Email regex pattern
+    const emailPattern = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+    const foundEmails = pageContent.match(emailPattern) || [];
+    
+    // Filter and deduplicate
+    for (const email of foundEmails) {
+      const cleanEmail = email.toLowerCase().trim();
+      // Filter out common false positives
+      if (
+        !cleanEmail.includes('example.com') &&
+        !cleanEmail.includes('sentry.io') &&
+        !cleanEmail.includes('wixpress') &&
+        !cleanEmail.includes('@2x') &&
+        !cleanEmail.includes('.png') &&
+        !cleanEmail.includes('.jpg') &&
+        !cleanEmail.includes('.svg') &&
+        !emails.includes(cleanEmail)
+      ) {
+        emails.push(cleanEmail);
+      }
+    }
+    
+    // Also check for mailto: links
+    const mailtoLinks = await page.locator('a[href^="mailto:"]').all();
+    for (const link of mailtoLinks) {
+      const href = await link.getAttribute('href').catch(() => null);
+      if (href) {
+        const emailMatch = href.match(/mailto:([^?]+)/);
+        if (emailMatch && emailMatch[1]) {
+          const email = emailMatch[1].toLowerCase().trim();
+          if (!emails.includes(email)) {
+            emails.push(email);
+          }
+        }
+      }
+    }
+    
+    // Try to find contact page and scrape from there too
+    const contactLinks = await page.locator('a[href*="contact"], a[href*="Contact"], a:has-text("Contact")').all();
+    if (contactLinks.length > 0) {
+      try {
+        await contactLinks[0].click();
+        await sleep(2000);
+        
+        const contactContent = await page.content();
+        const contactEmails = contactContent.match(emailPattern) || [];
+        
+        for (const email of contactEmails) {
+          const cleanEmail = email.toLowerCase().trim();
+          if (
+            !cleanEmail.includes('example.com') &&
+            !cleanEmail.includes('sentry.io') &&
+            !cleanEmail.includes('wixpress') &&
+            !emails.includes(cleanEmail)
+          ) {
+            emails.push(cleanEmail);
+          }
+        }
+      } catch {
+        // Contact page navigation failed, continue with what we have
+      }
+    }
+    
+    if (emails.length > 0) {
+      console.log(`   [Worker ${workerId}] ✉️ Found ${emails.length} email(s): ${emails.slice(0, 3).join(', ')}${emails.length > 3 ? '...' : ''}`);
+    } else {
+      console.log(`   [Worker ${workerId}] 📭 No emails found on website`);
+    }
+    
+  } catch (error: any) {
+    console.log(`   [Worker ${workerId}] ⚠️ Email scrape failed: ${error?.message || error}`);
+  } finally {
+    if (context) {
+      await context.close().catch(() => {});
+    }
+  }
+  
+  return emails;
 }
 
 async function extractBusinessDetails(
@@ -262,8 +385,13 @@ async function scrapeGoogleMaps(
   query: string,
   location: string,
   workerId: number
-): Promise<{ business: ScrapedBusiness; qualityScore?: number; qualityIssues?: string[] }[]> {
-  const results: { business: ScrapedBusiness; qualityScore?: number; qualityIssues?: string[] }[] = [];
+): Promise<{ business: ScrapedBusiness; qualityScore?: number; qualityDetails?: WebsiteQualityResult }[] | null> {
+  // Check if we should stop
+  if (stopAllWorkers) {
+    return null;
+  }
+  
+  const results: { business: ScrapedBusiness; qualityScore?: number; qualityDetails?: WebsiteQualityResult }[] = [];
   const searchQuery = `${query} ${location} South Africa`;
   const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(searchQuery)}`;
 
@@ -290,7 +418,7 @@ async function scrapeGoogleMaps(
     }
 
     // Scroll to load more results
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 2; i++) {
       await page.evaluate(() => {
         const feed = document.querySelector('[role="feed"]');
         if (feed) feed.scrollTop = feed.scrollHeight;
@@ -304,6 +432,12 @@ async function scrapeGoogleMaps(
     console.log(`   [Worker ${workerId}] Found ${listings.length} listings, processing ${listingCount}`);
 
     for (let i = 0; i < listingCount; i++) {
+      // Check if we should stop
+      if (stopAllWorkers) {
+        console.log(`   [Worker ${workerId}] ⛔ Stopping due to API failure`);
+        return null;
+      }
+      
       try {
         // Re-query listings each time as DOM may change after clicks
         const currentListings = await page.locator('a[href*="/maps/place"]').all();
@@ -329,18 +463,38 @@ async function scrapeGoogleMaps(
           continue;
         }
 
-        // Check if this is a good prospect based on website quality
-        const prospectCheck = await isGoodProspect(business.website, browser, workerId);
+        // Check if this is a good prospect based on website quality (uses Google PageSpeed API)
+        const prospectCheck = await isGoodProspect(business.website, workerId);
+        
+        // Check if API failed
+        if (prospectCheck.shouldStop) {
+          console.log(`   [Worker ${workerId}] ⛔ Stopping due to API failure`);
+          return null;
+        }
 
         // Include if: good prospect AND has decent rating (3.0+)
         if (prospectCheck.isGood && business.rating && business.rating >= 3.0) {
+          // Scrape emails from website if available
+          if (business.website && !isSocialOrDirectory(business.website)) {
+            const scrapedEmails = await scrapeEmailsFromWebsite(browser, business.website, workerId);
+            const allEmails = [...business.emails, ...scrapedEmails];
+            business.emails = allEmails.filter((email, index) => allEmails.indexOf(email) === index);
+          }
+          
           results.push({
             business,
             qualityScore: prospectCheck.qualityScore,
-            qualityIssues: prospectCheck.issues,
+            qualityDetails: prospectCheck.qualityDetails,
           });
           const scoreInfo = prospectCheck.qualityScore !== undefined ? ` (Quality: ${prospectCheck.qualityScore}/100)` : '';
-          console.log(`   [Worker ${workerId}] ✓ Found: ${business.name} (${business.rating}⭐, ${business.phones.length} phones) [${prospectCheck.reason}]${scoreInfo}`);
+          const emailInfo = business.emails.length > 0 ? `, ${business.emails.length} email(s)` : '';
+          console.log(`   [Worker ${workerId}] ✓ Found: ${business.name} (${business.rating}⭐, ${business.phones.length} phones${emailInfo}) [${prospectCheck.reason}]${scoreInfo}`);
+          
+          // Check if we've reached target leads
+          if (totalAdded + results.length >= TARGET_LEADS) {
+            console.log(`   [Worker ${workerId}] 🎯 Target of ${TARGET_LEADS} leads reached!`);
+            break;
+          }
         } else if (!prospectCheck.isGood) {
           const scoreInfo = prospectCheck.qualityScore !== undefined ? ` (Quality: ${prospectCheck.qualityScore}/100)` : '';
           console.log(`   [Worker ${workerId}] Skip: ${business.name} - ${prospectCheck.reason}${scoreInfo}`);
@@ -394,208 +548,128 @@ function isDIYWebsiteUrl(website: string): boolean {
   return diyPatterns.some(pattern => website.toLowerCase().includes(pattern));
 }
 
-// Website quality analysis result
+// Website quality analysis result from Google PageSpeed Insights
 interface WebsiteQualityResult {
-  score: number; // 0-100 (lower = worse quality = better prospect)
+  score: number; // 0-100 overall score
+  performance: number;
+  accessibility: number;
+  bestPractices: number;
+  seo: number;
   issues: string[];
-  loadTime: number;
-  hasSSL: boolean;
-  hasMobileViewport: boolean;
-  hasProperTitle: boolean;
-  hasDescription: boolean;
-  hasImages: boolean;
-  hasContactInfo: boolean;
-  isResponsive: boolean;
   error?: string;
 }
 
-// Actually visit and analyze website quality
+// Use Google PageSpeed Insights API with retry and exponential backoff
 async function analyzeWebsiteQuality(
-  browser: Browser,
   websiteUrl: string,
   workerId: number
 ): Promise<WebsiteQualityResult> {
   const result: WebsiteQualityResult = {
-    score: 50, // Default middle score
+    score: 50,
+    performance: 0,
+    accessibility: 0,
+    bestPractices: 0,
+    seo: 0,
     issues: [],
-    loadTime: 0,
-    hasSSL: false,
-    hasMobileViewport: false,
-    hasProperTitle: false,
-    hasDescription: false,
-    hasImages: false,
-    hasContactInfo: false,
-    isResponsive: false,
   };
 
-  let context: BrowserContext | null = null;
-  
-  try {
-    // Ensure URL has protocol
-    let url = websiteUrl;
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = 'https://' + url;
-    }
-
-    // Check SSL
-    result.hasSSL = url.startsWith('https://');
-    if (!result.hasSSL) {
-      result.issues.push('No SSL certificate (HTTP only)');
-    }
-
-    // Create a new context for website analysis
-    context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    });
-    
-    const page = await context.newPage();
-    page.setDefaultTimeout(10000);
-
-    // Measure load time
-    const startTime = Date.now();
-    
-    try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    } catch (e) {
-      result.error = 'Failed to load website';
-      result.issues.push('Website failed to load or timed out');
-      result.score = 20; // Poor score for non-loading sites
-      return result;
-    }
-    
-    result.loadTime = Date.now() - startTime;
-    
-    // Slow load time is a bad sign
-    if (result.loadTime > 5000) {
-      result.issues.push(`Slow load time (${(result.loadTime / 1000).toFixed(1)}s)`);
-    }
-
-    // Check for mobile viewport meta tag
-    const viewportMeta = await page.locator('meta[name="viewport"]').count();
-    result.hasMobileViewport = viewportMeta > 0;
-    if (!result.hasMobileViewport) {
-      result.issues.push('No mobile viewport meta tag');
-    }
-
-    // Check title
-    const title = await page.title();
-    result.hasProperTitle = title.length > 10 && title.length < 100;
-    if (!result.hasProperTitle) {
-      result.issues.push('Missing or poor page title');
-    }
-
-    // Check meta description
-    const description = await page.locator('meta[name="description"]').getAttribute('content').catch(() => null);
-    result.hasDescription = !!description && description.length > 20;
-    if (!result.hasDescription) {
-      result.issues.push('Missing meta description');
-    }
-
-    // Check for images
-    const imageCount = await page.locator('img').count();
-    result.hasImages = imageCount > 0;
-    if (imageCount === 0) {
-      result.issues.push('No images on the page');
-    }
-
-    // Check for contact information (phone, email patterns)
-    const pageContent = await page.content();
-    const hasPhone = /(\+27|0\d{2})[\s.-]?\d{3}[\s.-]?\d{4}/.test(pageContent);
-    const hasEmail = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(pageContent);
-    result.hasContactInfo = hasPhone || hasEmail;
-    if (!result.hasContactInfo) {
-      result.issues.push('No visible contact information');
-    }
-
-    // Check for modern CSS/responsiveness indicators
-    const hasModernCSS = await page.evaluate(() => {
-      const styles = Array.from(document.styleSheets).some(sheet => {
-        try {
-          const rules = Array.from(sheet.cssRules || []);
-          return rules.some(rule => 
-            rule.cssText?.includes('flex') || 
-            rule.cssText?.includes('grid') ||
-            rule.cssText?.includes('@media')
-          );
-        } catch { return false; }
-      });
-      
-      // Also check inline styles
-      const elements = document.querySelectorAll('[style]');
-      const hasInlineFlex = Array.from(elements).some(el => 
-        el.getAttribute('style')?.includes('flex') ||
-        el.getAttribute('style')?.includes('grid')
-      );
-      
-      return styles || hasInlineFlex;
-    });
-    
-    result.isResponsive = hasModernCSS && result.hasMobileViewport;
-    if (!result.isResponsive) {
-      result.issues.push('Website may not be responsive/mobile-friendly');
-    }
-
-    // Check for outdated indicators
-    const hasOutdatedIndicators = await page.evaluate(() => {
-      // Check for tables used for layout (old school)
-      const layoutTables = document.querySelectorAll('table[width], table[bgcolor]');
-      // Check for old HTML elements
-      const oldElements = document.querySelectorAll('font, center, marquee, blink');
-      // Check for Flash
-      const hasFlash = document.querySelectorAll('object[type*="flash"], embed[type*="flash"]').length > 0;
-      
-      return layoutTables.length > 2 || oldElements.length > 0 || hasFlash;
-    });
-    
-    if (hasOutdatedIndicators) {
-      result.issues.push('Website uses outdated HTML/design patterns');
-    }
-
-    // Check for broken images
-    const brokenImages = await page.evaluate(() => {
-      const images = document.querySelectorAll('img');
-      let broken = 0;
-      images.forEach(img => {
-        if (!img.complete || img.naturalWidth === 0) broken++;
-      });
-      return broken;
-    });
-    
-    if (brokenImages > 0) {
-      result.issues.push(`${brokenImages} broken image(s)`);
-    }
-
-    // Calculate final score based on issues
-    // Start at 100, deduct points for each issue
-    let score = 100;
-    
-    if (!result.hasSSL) score -= 15;
-    if (!result.hasMobileViewport) score -= 20;
-    if (!result.hasProperTitle) score -= 10;
-    if (!result.hasDescription) score -= 10;
-    if (!result.hasImages) score -= 5;
-    if (!result.hasContactInfo) score -= 10;
-    if (!result.isResponsive) score -= 15;
-    if (result.loadTime > 5000) score -= 10;
-    if (result.loadTime > 10000) score -= 10;
-    if (hasOutdatedIndicators) score -= 20;
-    if (brokenImages > 0) score -= 5 * Math.min(brokenImages, 3);
-
-    result.score = Math.max(0, Math.min(100, score));
-    
-    console.log(`   [Worker ${workerId}] 🔍 Website analysis: ${websiteUrl} - Score: ${result.score}/100, Issues: ${result.issues.length}`);
-
-  } catch (error: any) {
-    result.error = error?.message || 'Unknown error';
-    result.issues.push('Error analyzing website');
-    result.score = 25; // Give benefit of doubt - probably a bad site
-  } finally {
-    if (context) {
-      await context.close().catch(() => {});
-    }
+  // Ensure URL has protocol
+  let url = websiteUrl;
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = 'https://' + url;
   }
 
+  // Google PageSpeed Insights API - completely FREE
+  const apiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&category=performance&category=accessibility&category=best-practices&category=seo&strategy=mobile`;
+  
+  let lastError: string = '';
+  
+  for (let attempt = 1; attempt <= PAGESPEED_MAX_RETRIES; attempt++) {
+    try {
+      console.log(`   [Worker ${workerId}] 🔍 PageSpeed API call (attempt ${attempt}/${PAGESPEED_MAX_RETRIES}): ${url}`);
+      
+      // Add delay between API calls
+      if (attempt > 1) {
+        const backoffMs = PAGESPEED_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 2); // Exponential backoff
+        console.log(`   [Worker ${workerId}] ⏳ Waiting ${Math.round(backoffMs / 1000)}s before retry...`);
+        await sleep(backoffMs);
+      } else {
+        await sleep(DELAY_BETWEEN_API_CALLS); // Standard delay between calls
+      }
+      
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000); // 60 second timeout
+      
+      const response = await fetch(apiUrl, { signal: controller.signal });
+      clearTimeout(timeout);
+      
+      if (response.status === 429) {
+        lastError = 'Rate limited (429)';
+        console.log(`   [Worker ${workerId}] ⚠️ Rate limited, will retry...`);
+        continue; // Retry with backoff
+      }
+      
+      if (!response.ok) {
+        lastError = `API returned ${response.status}`;
+        console.log(`   [Worker ${workerId}] ⚠️ API error ${response.status}, will retry...`);
+        continue; // Retry
+      }
+      
+      const data = await response.json();
+      
+      // Extract scores (they're 0-1, multiply by 100)
+      const categories = data.lighthouseResult?.categories;
+      if (categories) {
+        result.performance = Math.round((categories.performance?.score || 0) * 100);
+        result.accessibility = Math.round((categories.accessibility?.score || 0) * 100);
+        result.bestPractices = Math.round((categories['best-practices']?.score || 0) * 100);
+        result.seo = Math.round((categories.seo?.score || 0) * 100);
+        
+        // Calculate overall score (weighted average)
+        result.score = Math.round(
+          (result.performance * 0.25) +
+          (result.accessibility * 0.25) +
+          (result.bestPractices * 0.25) +
+          (result.seo * 0.25)
+        );
+      }
+      
+      // Extract specific issues/audits that failed
+      const audits = data.lighthouseResult?.audits;
+      if (audits) {
+        if (audits['is-on-https']?.score === 0) result.issues.push('No HTTPS');
+        if (audits['viewport']?.score === 0) result.issues.push('No viewport meta tag');
+        if (audits['document-title']?.score === 0) result.issues.push('Missing page title');
+        if (audits['meta-description']?.score === 0) result.issues.push('Missing meta description');
+        if (audits['image-alt']?.score === 0) result.issues.push('Images missing alt text');
+        if (audits['color-contrast']?.score === 0) result.issues.push('Poor color contrast');
+        if (audits['tap-targets']?.score === 0) result.issues.push('Tap targets too small');
+        if (audits['font-size']?.score === 0) result.issues.push('Font too small for mobile');
+        if (result.performance < 50) result.issues.push('Poor performance');
+        if (result.seo < 50) result.issues.push('Poor SEO');
+      }
+      
+      console.log(`   [Worker ${workerId}] ✅ PageSpeed: Overall=${result.score} | Perf=${result.performance} | A11y=${result.accessibility} | BP=${result.bestPractices} | SEO=${result.seo}`);
+      
+      return result; // Success!
+      
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        lastError = 'Request timeout';
+      } else {
+        lastError = error?.message || 'Unknown error';
+      }
+      console.log(`   [Worker ${workerId}] ⚠️ Attempt ${attempt} failed: ${lastError}`);
+    }
+  }
+  
+  // All retries exhausted - this is a fatal error
+  console.error(`\n❌ [Worker ${workerId}] FATAL: PageSpeed API failed after ${PAGESPEED_MAX_RETRIES} retries: ${lastError}`);
+  console.error(`❌ Cannot guarantee lead quality - stopping process.\n`);
+  
+  result.error = `API failed after ${PAGESPEED_MAX_RETRIES} retries: ${lastError}`;
+  stopAllWorkers = true; // Signal all workers to stop
+  
   return result;
 }
 
@@ -605,9 +679,13 @@ const WEBSITE_QUALITY_THRESHOLD = 60;
 // Determine if this is a good prospect based on website quality
 async function isGoodProspect(
   website: string | undefined,
-  browser: Browser | null,
   workerId: number
-): Promise<{ isGood: boolean; reason: string; qualityScore?: number; issues?: string[] }> {
+): Promise<{ isGood: boolean; reason: string; qualityScore?: number; qualityDetails?: WebsiteQualityResult; shouldStop?: boolean }> {
+  // Check if we should stop
+  if (stopAllWorkers) {
+    return { isGood: false, reason: 'STOPPED', shouldStop: true };
+  }
+  
   // No website = perfect prospect
   if (!website) {
     return { isGood: true, reason: 'NO_WEBSITE' };
@@ -623,30 +701,31 @@ async function isGoodProspect(
     return { isGood: true, reason: 'DIY_WEBSITE_PLATFORM' };
   }
   
-  // Has a proper domain - need to analyze the actual website quality
-  if (browser) {
-    const qualityResult = await analyzeWebsiteQuality(browser, website, workerId);
-    
-    // If website failed to load or has many issues, it's a good prospect
-    if (qualityResult.error || qualityResult.score < WEBSITE_QUALITY_THRESHOLD) {
-      return { 
-        isGood: true, 
-        reason: 'POOR_QUALITY_WEBSITE',
-        qualityScore: qualityResult.score,
-        issues: qualityResult.issues
-      };
-    }
-    
-    // Website is decent quality - skip this lead
+  // Has a proper domain - analyze using Google PageSpeed Insights API
+  const qualityResult = await analyzeWebsiteQuality(website, workerId);
+  
+  // Check if API failed fatally
+  if (stopAllWorkers) {
+    return { isGood: false, reason: 'API_FAILED', shouldStop: true };
+  }
+  
+  // If website has poor score, it's a good prospect
+  if (qualityResult.score < WEBSITE_QUALITY_THRESHOLD) {
     return { 
-      isGood: false, 
-      reason: 'HAS_QUALITY_WEBSITE',
-      qualityScore: qualityResult.score
+      isGood: true, 
+      reason: 'POOR_QUALITY_WEBSITE',
+      qualityScore: qualityResult.score,
+      qualityDetails: qualityResult
     };
   }
   
-  // No browser available for analysis - assume it's a decent website
-  return { isGood: false, reason: 'HAS_WEBSITE_UNANALYZED' };
+  // Website is decent quality - skip this lead
+  return { 
+    isGood: false, 
+    reason: 'HAS_QUALITY_WEBSITE',
+    qualityScore: qualityResult.score,
+    qualityDetails: qualityResult
+  };
 }
 
 function calculateWebsiteScore(website: string | null | undefined, qualityScore?: number): number {
@@ -666,7 +745,7 @@ async function saveLeadToDatabase(
   location: string,
   workerId: number,
   qualityScore?: number,
-  qualityIssues?: string[]
+  qualityDetails?: WebsiteQualityResult
 ): Promise<boolean> {
   try {
     const websiteScore = calculateWebsiteScore(business.website, qualityScore);
@@ -678,6 +757,7 @@ async function saveLeadToDatabase(
     );
 
     const primaryPhone = business.phones[0] || null;
+    const primaryEmail = business.emails[0] || null;
 
     // Check if lead already exists
     const existing = await prisma.lead.findFirst({
@@ -703,10 +783,10 @@ async function saveLeadToDatabase(
       prospectNote = '📱 Only has social media/directory listing - Great prospect!';
     } else if (isDIYWebsiteUrl(business.website)) {
       prospectNote = '🔧 Has DIY website platform - Good prospect for upgrade!';
-    } else if (qualityScore !== undefined && qualityScore < WEBSITE_QUALITY_THRESHOLD) {
-      prospectNote = `⚠️ Website quality score: ${qualityScore}/100 - Needs improvement!`;
-      if (qualityIssues && qualityIssues.length > 0) {
-        prospectNote += ` Issues: ${qualityIssues.join(', ')}`;
+    } else if (qualityDetails) {
+      prospectNote = `📊 PageSpeed Score: ${qualityScore}/100 (Perf: ${qualityDetails.performance}, SEO: ${qualityDetails.seo}, A11y: ${qualityDetails.accessibility})`;
+      if (qualityDetails.issues.length > 0) {
+        prospectNote += ` | Issues: ${qualityDetails.issues.slice(0, 3).join(', ')}`;
       }
     } else {
       prospectNote = `Website: ${business.website}`;
@@ -716,13 +796,14 @@ async function saveLeadToDatabase(
       `Scraped from Google Maps.`,
       prospectNote,
       business.phones.length > 1 ? `📞 Additional phones: ${business.phones.slice(1).join(', ')}` : '',
+      business.emails.length > 0 ? `✉️ Emails found: ${business.emails.join(', ')}` : '',
     ].filter(Boolean).join(' ');
 
     // Create the lead
     await prisma.lead.create({
       data: {
         businessName: business.name,
-        email: null,
+        email: primaryEmail,
         phone: primaryPhone,
         website: business.website,
         address: business.address,
@@ -741,9 +822,13 @@ async function saveLeadToDatabase(
           phones: business.phones,
           emails: business.emails,
           category: business.category,
-          websiteAnalysis: qualityScore !== undefined ? {
-            score: qualityScore,
-            issues: qualityIssues || [],
+          pageSpeedAnalysis: qualityDetails ? {
+            overallScore: qualityDetails.score,
+            performance: qualityDetails.performance,
+            accessibility: qualityDetails.accessibility,
+            bestPractices: qualityDetails.bestPractices,
+            seo: qualityDetails.seo,
+            issues: qualityDetails.issues,
           } : undefined,
         },
       },
@@ -811,16 +896,37 @@ async function workerTask(
       console.log(`\n📍 [Worker ${workerId}] ${city} - ${industry}:`);
 
       try {
+        // Check if we should stop
+        if (stopAllWorkers) {
+          console.log(`   [Worker ${workerId}] ⛔ Stopping due to API failure`);
+          break;
+        }
+        
+        // Check if we've reached target
+        if (totalAdded >= TARGET_LEADS) {
+          console.log(`   [Worker ${workerId}] 🎯 Target reached, stopping worker`);
+          break;
+        }
+        
         const activePage = await ensurePage();
         const businessResults = await scrapeGoogleMaps(activePage, browser, industry, city, workerId);
+        
+        // Check if scraping was stopped due to API failure
+        if (businessResults === null) {
+          console.log(`   [Worker ${workerId}] ⛔ Stopping due to API failure`);
+          break;
+        }
+        
         consecutiveErrors = 0; // Reset on success
 
-        for (const { business, qualityScore, qualityIssues } of businessResults) {
-          const saved = await saveLeadToDatabase(business, industry, city, workerId, qualityScore, qualityIssues);
+        for (const { business, qualityScore, qualityDetails } of businessResults) {
+          if (totalAdded >= TARGET_LEADS || stopAllWorkers) break;
+          
+          const saved = await saveLeadToDatabase(business, industry, city, workerId, qualityScore, qualityDetails);
           if (saved) {
             totalAdded++;
             workerAdded++;
-            console.log(`   [Worker ${workerId}] 💾 Saved (total: ${totalAdded})`);
+            console.log(`   [Worker ${workerId}] 💾 Saved (total: ${totalAdded}/${TARGET_LEADS})`);
           }
         }
 
