@@ -20,6 +20,7 @@ const columnColors: Record<LeadStatus, string> = {
   RESPONDED: 'border-t-green-500',
   CONVERTED: 'border-t-emerald-500',
   NOT_INTERESTED: 'border-t-gray-500',
+  REJECTED: 'border-t-red-500',
   INVALID: 'border-t-red-500',
 };
 

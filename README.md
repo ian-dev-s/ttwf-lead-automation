@@ -16,7 +16,7 @@ An AI-powered lead generation and tracking tool for The Tiny Web Factory. Find S
 
 - **Framework**: Next.js 14 (App Router)
 - **UI**: Tailwind CSS + shadcn/ui
-- **Database**: PostgreSQL with Prisma ORM
+- **Database**: PostgreSQL with Prisma ORM 7.3.0
 - **Authentication**: NextAuth.js v5
 - **AI**: Vercel AI SDK (OpenAI, Anthropic, Google)
 - **Browser Automation**: Playwright

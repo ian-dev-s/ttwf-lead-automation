@@ -58,6 +58,7 @@ export const leadStatusLabels: Record<LeadStatus, string> = {
   RESPONDED: 'Responded',
   CONVERTED: 'Converted',
   NOT_INTERESTED: 'Not Interested',
+  REJECTED: 'Rejected',
   INVALID: 'Invalid',
 };
 
@@ -71,6 +72,7 @@ export const leadStatusColors: Record<LeadStatus, string> = {
   RESPONDED: 'bg-green-100 text-green-800',
   CONVERTED: 'bg-emerald-100 text-emerald-800',
   NOT_INTERESTED: 'bg-gray-100 text-gray-800',
+  REJECTED: 'bg-red-100 text-red-800',
   INVALID: 'bg-red-100 text-red-800',
 };
 
@@ -84,6 +86,7 @@ export const kanbanColumnOrder: LeadStatus[] = [
   'RESPONDED',
   'CONVERTED',
   'NOT_INTERESTED',
+  'REJECTED',
   'INVALID',
 ];
 

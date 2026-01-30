@@ -13,6 +13,7 @@ import {
     DialogHeader,
     DialogTitle,
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
@@ -25,6 +26,8 @@ import {
 } from '@/lib/utils';
 import { Lead, Message, MessageType, StatusHistory } from '@prisma/client';
 import {
+    CheckCircle,
+    Edit2,
     ExternalLink,
     Facebook,
     Globe,
@@ -34,8 +37,10 @@ import {
     MapPin,
     MessageSquare,
     Phone,
+    Save,
     Sparkles,
     Star,
+    X,
     XCircle,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
@@ -60,6 +65,88 @@ export function LeadDetail({ lead }: LeadDetailProps) {
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [isRejecting, setIsRejecting] = useState(false);
+  const [isQualifying, setIsQualifying] = useState(false);
+  
+  // Editing states
+  const [isEditingPhone, setIsEditingPhone] = useState(false);
+  const [isEditingEmail, setIsEditingEmail] = useState(false);
+  const [isEditingWebsite, setIsEditingWebsite] = useState(false);
+  const [isEditingNotes, setIsEditingNotes] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  
+  // Edit values
+  const [editPhone, setEditPhone] = useState(lead.phone || '');
+  const [editEmail, setEditEmail] = useState(lead.email || '');
+  const [editWebsite, setEditWebsite] = useState(lead.website || '');
+  const [editNotes, setEditNotes] = useState(lead.notes || '');
+
+  const handleSaveField = async (field: 'phone' | 'email' | 'website' | 'notes', value: string) => {
+    setIsSaving(true);
+    try {
+      const response = await fetch(`/api/leads/${lead.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          [field]: value || null,
+        }),
+      });
+
+      if (!response.ok) throw new Error(`Failed to update ${field}`);
+
+      // Reset editing state
+      if (field === 'phone') setIsEditingPhone(false);
+      if (field === 'email') setIsEditingEmail(false);
+      if (field === 'website') setIsEditingWebsite(false);
+      if (field === 'notes') setIsEditingNotes(false);
+
+      router.refresh();
+    } catch (error) {
+      console.error(`Error updating ${field}:`, error);
+      alert(`Failed to update ${field}. Please try again.`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleCancelEdit = (field: 'phone' | 'email' | 'website' | 'notes') => {
+    if (field === 'phone') {
+      setEditPhone(lead.phone || '');
+      setIsEditingPhone(false);
+    }
+    if (field === 'email') {
+      setEditEmail(lead.email || '');
+      setIsEditingEmail(false);
+    }
+    if (field === 'website') {
+      setEditWebsite(lead.website || '');
+      setIsEditingWebsite(false);
+    }
+    if (field === 'notes') {
+      setEditNotes(lead.notes || '');
+      setIsEditingNotes(false);
+    }
+  };
+
+  const handleQualifyLead = async () => {
+    setIsQualifying(true);
+    try {
+      const response = await fetch(`/api/leads/${lead.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'QUALIFIED',
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to qualify lead');
+
+      router.refresh();
+    } catch (error) {
+      console.error('Error qualifying lead:', error);
+    } finally {
+      setIsQualifying(false);
+    }
+  };
 
   const handleRejectLead = async () => {
     setIsRejecting(true);
@@ -74,7 +161,7 @@ export function LeadDetail({ lead }: LeadDetailProps) {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          status: 'NOT_INTERESTED',
+          status: 'REJECTED',
           notes: newNotes,
         }),
       });
@@ -137,16 +224,6 @@ export function LeadDetail({ lead }: LeadDetailProps) {
             {leadStatusLabels[lead.status]}
           </Badge>
           <Badge variant="secondary">Score: {lead.score}</Badge>
-          {lead.status !== 'NOT_INTERESTED' && lead.status !== 'INVALID' && (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setShowRejectDialog(true)}
-            >
-              <XCircle className="h-4 w-4 mr-2" />
-              Reject Lead
-            </Button>
-          )}
         </div>
       </div>
 
@@ -221,94 +298,147 @@ export function LeadDetail({ lead }: LeadDetailProps) {
                   </div>
                 </div>
 
-                {/* All Phone Numbers */}
-                {(() => {
-                  const metadata = lead.metadata as { phones?: string[]; emails?: string[] } | null;
-                  const allPhones = metadata?.phones || (lead.phone ? [lead.phone] : []);
-                  
-                  if (allPhones.length > 0) {
-                    return (
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                          <Phone className="h-4 w-4" />
-                          <span>Phone Numbers ({allPhones.length})</span>
-                        </div>
-                        <div className="ml-6 space-y-2">
-                          {allPhones.map((phone, index) => (
-                            <div key={index} className="flex items-center gap-3 p-2 rounded-md bg-muted/50">
-                              <div className="flex-1">
-                                <p className="font-medium">{formatPhoneNumber(phone)}</p>
-                                <div className="flex gap-2 mt-1">
-                                  <a
-                                    href={getWhatsAppUrl(phone)}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-xs text-green-600 hover:underline"
-                                  >
-                                    WhatsApp
-                                  </a>
-                                  <a
-                                    href={`tel:${phone}`}
-                                    className="text-xs text-primary hover:underline"
-                                  >
-                                    Call
-                                  </a>
-                                </div>
-                              </div>
-                              {index === 0 && (
-                                <Badge variant="secondary" className="text-xs">Primary</Badge>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div className="flex items-center gap-3 text-muted-foreground">
-                      <Phone className="h-5 w-5" />
-                      <span className="text-sm">No phone numbers found</span>
+                {/* Phone Number - Editable */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                      <Phone className="h-4 w-4" />
+                      <span>Phone Number</span>
                     </div>
-                  );
-                })()}
-
-                {/* All Email Addresses */}
-                {(() => {
-                  const metadata = lead.metadata as { phones?: string[]; emails?: string[] } | null;
-                  const allEmails = metadata?.emails || (lead.email ? [lead.email] : []);
-                  
-                  if (allEmails.length > 0) {
-                    return (
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                          <Mail className="h-4 w-4" />
-                          <span>Email Addresses ({allEmails.length})</span>
-                        </div>
-                        <div className="ml-6 space-y-2">
-                          {allEmails.map((email, index) => (
-                            <div key={index} className="flex items-center gap-3 p-2 rounded-md bg-muted/50">
+                    {!isEditingPhone && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsEditingPhone(true)}
+                        className="h-7 px-2"
+                      >
+                        <Edit2 className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                  {isEditingPhone ? (
+                    <div className="ml-6 space-y-2">
+                      <Input
+                        value={editPhone}
+                        onChange={(e) => setEditPhone(e.target.value)}
+                        placeholder="Enter phone number"
+                        disabled={isSaving}
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => handleSaveField('phone', editPhone)}
+                          disabled={isSaving}
+                        >
+                          {isSaving ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Save className="h-3 w-3 mr-1" />}
+                          Save
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleCancelEdit('phone')}
+                          disabled={isSaving}
+                        >
+                          <X className="h-3 w-3 mr-1" />
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="ml-6">
+                      {lead.phone ? (
+                        <div className="flex items-center gap-3 p-2 rounded-md bg-muted/50">
+                          <div className="flex-1">
+                            <p className="font-medium">{formatPhoneNumber(lead.phone)}</p>
+                            <div className="flex gap-2 mt-1">
                               <a
-                                href={`mailto:${email}`}
-                                className="flex-1 font-medium hover:underline"
+                                href={getWhatsAppUrl(lead.phone)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs text-green-600 hover:underline"
                               >
-                                {email}
+                                WhatsApp
                               </a>
-                              {index === 0 && (
-                                <Badge variant="secondary" className="text-xs">Primary</Badge>
-                              )}
+                              <a
+                                href={`tel:${lead.phone}`}
+                                className="text-xs text-primary hover:underline"
+                              >
+                                Call
+                              </a>
                             </div>
-                          ))}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div className="flex items-center gap-3 text-muted-foreground">
-                      <Mail className="h-5 w-5" />
-                      <span className="text-sm">No email addresses found</span>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">No phone number</p>
+                      )}
                     </div>
-                  );
-                })()}
+                  )}
+                </div>
+
+                {/* Email Address - Editable */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                      <Mail className="h-4 w-4" />
+                      <span>Email Address</span>
+                    </div>
+                    {!isEditingEmail && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsEditingEmail(true)}
+                        className="h-7 px-2"
+                      >
+                        <Edit2 className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                  {isEditingEmail ? (
+                    <div className="ml-6 space-y-2">
+                      <Input
+                        type="email"
+                        value={editEmail}
+                        onChange={(e) => setEditEmail(e.target.value)}
+                        placeholder="Enter email address"
+                        disabled={isSaving}
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => handleSaveField('email', editEmail)}
+                          disabled={isSaving}
+                        >
+                          {isSaving ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Save className="h-3 w-3 mr-1" />}
+                          Save
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleCancelEdit('email')}
+                          disabled={isSaving}
+                        >
+                          <X className="h-3 w-3 mr-1" />
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="ml-6">
+                      {lead.email ? (
+                        <div className="flex items-center gap-3 p-2 rounded-md bg-muted/50">
+                          <a
+                            href={`mailto:${lead.email}`}
+                            className="flex-1 font-medium hover:underline"
+                          >
+                            {lead.email}
+                          </a>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">No email address</p>
+                      )}
+                    </div>
+                  )}
+                </div>
               </CardContent>
             </Card>
 
@@ -318,30 +448,77 @@ export function LeadDetail({ lead }: LeadDetailProps) {
                 <CardTitle className="text-lg">Online Presence</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <Globe className="h-5 w-5 text-muted-foreground" />
-                  <div>
-                    {lead.website ? (
-                      <>
-                        <a
-                          href={lead.website}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-medium hover:underline flex items-center gap-1"
-                        >
-                          {lead.website}
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
-                        {lead.websiteQuality && (
-                          <p className="text-sm text-muted-foreground">
-                            Quality Score: {lead.websiteQuality}/100
-                          </p>
-                        )}
-                      </>
-                    ) : (
-                      <p className="text-green-600 font-medium">No website - Great prospect!</p>
+                {/* Website - Editable */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                      <Globe className="h-4 w-4" />
+                      <span>Website</span>
+                    </div>
+                    {!isEditingWebsite && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsEditingWebsite(true)}
+                        className="h-7 px-2"
+                      >
+                        <Edit2 className="h-3 w-3" />
+                      </Button>
                     )}
                   </div>
+                  {isEditingWebsite ? (
+                    <div className="ml-6 space-y-2">
+                      <Input
+                        type="url"
+                        value={editWebsite}
+                        onChange={(e) => setEditWebsite(e.target.value)}
+                        placeholder="https://example.com"
+                        disabled={isSaving}
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => handleSaveField('website', editWebsite)}
+                          disabled={isSaving}
+                        >
+                          {isSaving ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Save className="h-3 w-3 mr-1" />}
+                          Save
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleCancelEdit('website')}
+                          disabled={isSaving}
+                        >
+                          <X className="h-3 w-3 mr-1" />
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="ml-6">
+                      {lead.website ? (
+                        <div>
+                          <a
+                            href={lead.website}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-medium hover:underline flex items-center gap-1"
+                          >
+                            {lead.website}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                          {lead.websiteQuality && (
+                            <p className="text-sm text-muted-foreground mt-1">
+                              Quality Score: {lead.websiteQuality}/100
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-green-600 font-medium">No website - Great prospect!</p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {lead.googleRating && (
@@ -386,17 +563,99 @@ export function LeadDetail({ lead }: LeadDetailProps) {
             </Card>
           </div>
 
-          {/* Notes */}
-          {lead.notes && (
-            <Card>
-              <CardHeader>
+          {/* Lead Actions */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Lead Actions</CardTitle>
+              <CardDescription>
+                Update the lead status or reject this lead
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex gap-4">
+              {lead.status !== 'QUALIFIED' && lead.status !== 'NOT_INTERESTED' && lead.status !== 'REJECTED' && lead.status !== 'INVALID' && (
+                <Button
+                  onClick={handleQualifyLead}
+                  disabled={isQualifying}
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                >
+                  {isQualifying ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <CheckCircle className="h-4 w-4 mr-2" />
+                  )}
+                  {isQualifying ? 'Qualifying...' : 'Qualify Lead'}
+                </Button>
+              )}
+              {lead.status !== 'NOT_INTERESTED' && lead.status !== 'REJECTED' && lead.status !== 'INVALID' && (
+                <Button
+                  variant="destructive"
+                  onClick={() => setShowRejectDialog(true)}
+                >
+                  <XCircle className="h-4 w-4 mr-2" />
+                  Reject Lead
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Notes - Editable */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
                 <CardTitle className="text-lg">Notes</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="whitespace-pre-wrap">{lead.notes}</p>
-              </CardContent>
-            </Card>
-          )}
+                {!isEditingNotes && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setIsEditingNotes(true)}
+                    className="h-7 px-2"
+                  >
+                    <Edit2 className="h-3 w-3" />
+                  </Button>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent>
+              {isEditingNotes ? (
+                <div className="space-y-2">
+                  <Textarea
+                    value={editNotes}
+                    onChange={(e) => setEditNotes(e.target.value)}
+                    placeholder="Add notes about this lead..."
+                    rows={6}
+                    disabled={isSaving}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => handleSaveField('notes', editNotes)}
+                      disabled={isSaving}
+                    >
+                      {isSaving ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Save className="h-3 w-3 mr-1" />}
+                      Save
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleCancelEdit('notes')}
+                      disabled={isSaving}
+                    >
+                      <X className="h-3 w-3 mr-1" />
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  {lead.notes ? (
+                    <p className="whitespace-pre-wrap">{lead.notes}</p>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No notes yet. Click edit to add notes.</p>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Generate Message Actions */}
           <Card>
