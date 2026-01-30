@@ -123,34 +123,94 @@ export function LeadDetail({ lead }: LeadDetailProps) {
                   </div>
                 </div>
 
-                {lead.phone && (
-                  <div className="flex items-center gap-3">
-                    <Phone className="h-5 w-5 text-muted-foreground" />
-                    <div>
-                      <p className="font-medium">{formatPhoneNumber(lead.phone)}</p>
-                      <a
-                        href={getWhatsAppUrl(lead.phone)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-primary hover:underline"
-                      >
-                        Open in WhatsApp
-                      </a>
+                {/* All Phone Numbers */}
+                {(() => {
+                  const metadata = lead.metadata as { phones?: string[]; emails?: string[] } | null;
+                  const allPhones = metadata?.phones || (lead.phone ? [lead.phone] : []);
+                  
+                  if (allPhones.length > 0) {
+                    return (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                          <Phone className="h-4 w-4" />
+                          <span>Phone Numbers ({allPhones.length})</span>
+                        </div>
+                        <div className="ml-6 space-y-2">
+                          {allPhones.map((phone, index) => (
+                            <div key={index} className="flex items-center gap-3 p-2 rounded-md bg-muted/50">
+                              <div className="flex-1">
+                                <p className="font-medium">{formatPhoneNumber(phone)}</p>
+                                <div className="flex gap-2 mt-1">
+                                  <a
+                                    href={getWhatsAppUrl(phone)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs text-green-600 hover:underline"
+                                  >
+                                    WhatsApp
+                                  </a>
+                                  <a
+                                    href={`tel:${phone}`}
+                                    className="text-xs text-primary hover:underline"
+                                  >
+                                    Call
+                                  </a>
+                                </div>
+                              </div>
+                              {index === 0 && (
+                                <Badge variant="secondary" className="text-xs">Primary</Badge>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="flex items-center gap-3 text-muted-foreground">
+                      <Phone className="h-5 w-5" />
+                      <span className="text-sm">No phone numbers found</span>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
 
-                {lead.email && (
-                  <div className="flex items-center gap-3">
-                    <Mail className="h-5 w-5 text-muted-foreground" />
-                    <a
-                      href={`mailto:${lead.email}`}
-                      className="font-medium hover:underline"
-                    >
-                      {lead.email}
-                    </a>
-                  </div>
-                )}
+                {/* All Email Addresses */}
+                {(() => {
+                  const metadata = lead.metadata as { phones?: string[]; emails?: string[] } | null;
+                  const allEmails = metadata?.emails || (lead.email ? [lead.email] : []);
+                  
+                  if (allEmails.length > 0) {
+                    return (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                          <Mail className="h-4 w-4" />
+                          <span>Email Addresses ({allEmails.length})</span>
+                        </div>
+                        <div className="ml-6 space-y-2">
+                          {allEmails.map((email, index) => (
+                            <div key={index} className="flex items-center gap-3 p-2 rounded-md bg-muted/50">
+                              <a
+                                href={`mailto:${email}`}
+                                className="flex-1 font-medium hover:underline"
+                              >
+                                {email}
+                              </a>
+                              {index === 0 && (
+                                <Badge variant="secondary" className="text-xs">Primary</Badge>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="flex items-center gap-3 text-muted-foreground">
+                      <Mail className="h-5 w-5" />
+                      <span className="text-sm">No email addresses found</span>
+                    </div>
+                  );
+                })()}
               </CardContent>
             </Card>
 

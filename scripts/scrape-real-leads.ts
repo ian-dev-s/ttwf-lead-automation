@@ -17,7 +17,8 @@ const MAX_RESULTS_PER_SEARCH = 100; // Max results per search query
 interface ScrapedBusiness {
   name: string;
   address: string;
-  phone?: string;
+  phones: string[];  // All phone numbers (cell, landline, etc.)
+  emails: string[];  // All email addresses found
   website?: string;
   rating?: number;
   reviewCount?: number;
@@ -112,29 +113,29 @@ async function scrapeGoogleMaps(
 
   try {
     console.log(`   [Worker ${workerId}] Searching: "${searchQuery}"...`);
-    await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
     // Accept cookies if prompted
     try {
       const acceptButton = page.locator('button:has-text("Accept all")');
-      if (await acceptButton.isVisible({ timeout: 1000 })) {
+      if (await acceptButton.isVisible({ timeout: 2000 })) {
         await acceptButton.click();
       }
     } catch {
       // No cookie prompt
     }
 
-    // Wait for results feed
-    await page.waitForSelector('[role="feed"]', { timeout: 10000 }).catch(() => null);
+    // Wait for results feed to appear
+    await page.waitForSelector('[role="feed"]', { timeout: 15000 }).catch(() => null);
 
-    // Scroll to load more results
+    // Scroll to load more results - use a timeout instead of networkidle
     for (let i = 0; i < 5; i++) {
       await page.evaluate(() => {
         const feed = document.querySelector('[role="feed"]');
         if (feed) feed.scrollTop = feed.scrollHeight;
       });
-      // Wait for new content to potentially load
-      await page.waitForLoadState('networkidle').catch(() => null);
+      // Brief wait for content to load after scroll
+      await page.waitForTimeout(500);
     }
 
     // Get all listings
@@ -158,10 +159,52 @@ async function scrapeGoogleMaps(
           .textContent()
           .catch(() => null);
 
-        const phone = await page
-          .locator('[data-item-id^="phone:"] .fontBodyMedium')
-          .textContent()
-          .catch(() => null);
+        // Extract ALL phone numbers (cell, landline, fax, etc.)
+        const phoneElements = await page.locator('[data-item-id^="phone:"] .fontBodyMedium').all();
+        const phones: string[] = [];
+        for (const phoneEl of phoneElements) {
+          const phoneText = await phoneEl.textContent().catch(() => null);
+          if (phoneText) {
+            const cleanPhone = phoneText.trim();
+            if (cleanPhone && !phones.includes(cleanPhone)) {
+              phones.push(cleanPhone);
+            }
+          }
+        }
+
+        // Also check for additional contact info in the about section
+        const additionalPhones = await page.evaluate(() => {
+          const phoneRegex = /(?:\+27|0)[\s.-]?\d{2}[\s.-]?\d{3}[\s.-]?\d{4}/g;
+          const pageText = document.body.innerText;
+          const matches = pageText.match(phoneRegex) || [];
+          return Array.from(new Set(matches));
+        });
+        for (const phone of additionalPhones) {
+          const cleanPhone = phone.trim();
+          if (cleanPhone && !phones.includes(cleanPhone)) {
+            phones.push(cleanPhone);
+          }
+        }
+
+        // Extract email addresses from the page
+        const emails: string[] = [];
+        const emailFromPage = await page.evaluate(() => {
+          const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+          const pageText = document.body.innerText;
+          const matches = pageText.match(emailRegex) || [];
+          // Filter out common false positives
+          return Array.from(new Set(matches)).filter(email => 
+            !email.includes('google.com') && 
+            !email.includes('gstatic.com') &&
+            !email.includes('schema.org') &&
+            !email.includes('example.com')
+          );
+        });
+        for (const email of emailFromPage) {
+          if (!emails.includes(email)) {
+            emails.push(email);
+          }
+        }
 
         const website = await page
           .locator('[data-item-id="authority"] a')
@@ -212,7 +255,8 @@ async function scrapeGoogleMaps(
           results.push({
             name: name.trim(),
             address: address?.trim() || location,
-            phone: phone?.trim(),
+            phones,
+            emails,
             website: website?.trim(),
             rating,
             reviewCount,
@@ -220,7 +264,7 @@ async function scrapeGoogleMaps(
             category: category?.trim() || query,
             placeId: currentUrl.match(/!1s([^!]+)/)?.[1],
           });
-          console.log(`   [Worker ${workerId}] ✓ Found: ${name.trim()} (${rating}⭐)`);
+          console.log(`   [Worker ${workerId}] ✓ Found: ${name.trim()} (${rating}⭐, ${phones.length} phones, ${emails.length} emails)`);
         }
       } catch (err) {
         // Continue to next listing
@@ -254,13 +298,17 @@ async function saveLeadToDatabase(
       (100 - websiteScore) * 0.3 // Website quality (lower = better prospect)
     );
 
+    // Primary phone and email (first found)
+    const primaryPhone = business.phones[0] || null;
+    const primaryEmail = business.emails[0] || null;
+
     // Check if lead already exists to prevent duplicates
     const existing = await prisma.lead.findFirst({
       where: {
         OR: [
           { businessName: business.name, location: location },
           { googleMapsUrl: business.googleMapsUrl },
-          { businessName: business.name, phone: business.phone },
+          ...(primaryPhone ? [{ businessName: business.name, phone: primaryPhone }] : []),
         ],
       },
     });
@@ -270,12 +318,21 @@ async function saveLeadToDatabase(
       return false;
     }
 
-    // Create the lead
+    // Build notes with all contact info
+    const contactNotes = [];
+    if (business.phones.length > 1) {
+      contactNotes.push(`Additional phones: ${business.phones.slice(1).join(', ')}`);
+    }
+    if (business.emails.length > 1) {
+      contactNotes.push(`Additional emails: ${business.emails.slice(1).join(', ')}`);
+    }
+
+    // Create the lead with all contact info in metadata
     await prisma.lead.create({
       data: {
         businessName: business.name,
-        email: null,
-        phone: business.phone,
+        email: primaryEmail,
+        phone: primaryPhone,
         website: business.website,
         address: business.address,
         location: location,
@@ -288,7 +345,18 @@ async function saveLeadToDatabase(
         facebookUrl: business.website?.includes('facebook.com') ? business.website : null,
         websiteQuality: websiteScore,
         score: Math.min(100, Math.max(0, leadScore)),
-        notes: `Scraped from Google Maps. ${!business.website ? 'NO WEBSITE - Great prospect!' : `Website: ${business.website}`}`,
+        notes: [
+          `Scraped from Google Maps.`,
+          !business.website ? 'NO WEBSITE - Great prospect!' : `Website: ${business.website}`,
+          ...contactNotes,
+        ].join(' '),
+        // Store ALL phones and emails in metadata for easy access
+        metadata: {
+          phones: business.phones,
+          emails: business.emails,
+          category: business.category,
+          placeId: business.placeId,
+        },
       },
     });
 

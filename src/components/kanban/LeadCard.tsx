@@ -16,6 +16,7 @@ import { Lead } from '@prisma/client';
 import {
     ExternalLink,
     Eye,
+    Mail,
     MapPin,
     MessageSquare,
     MoreVertical,
@@ -32,6 +33,11 @@ interface LeadCardProps {
 export function LeadCard({ lead, index }: LeadCardProps) {
   const hasHighScore = lead.score >= 70;
   const hasMediumScore = lead.score >= 40 && lead.score < 70;
+  
+  // Get all phones and emails from metadata
+  const metadata = lead.metadata as { phones?: string[]; emails?: string[] } | null;
+  const phoneCount = metadata?.phones?.length || (lead.phone ? 1 : 0);
+  const emailCount = metadata?.emails?.length || (lead.email ? 1 : 0);
 
   return (
     <Draggable draggableId={lead.id} index={index}>
@@ -118,12 +124,35 @@ export function LeadCard({ lead, index }: LeadCardProps) {
                 <span className="truncate">{lead.location}</span>
               </div>
 
-              {lead.phone && (
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <Phone className="h-3 w-3" />
-                  <span>{formatPhoneNumber(lead.phone)}</span>
-                </div>
-              )}
+              {/* Phone numbers with count */}
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <Phone className="h-3 w-3" />
+                {phoneCount > 0 ? (
+                  <span>
+                    {formatPhoneNumber(lead.phone || (metadata?.phones?.[0] ?? ''))}
+                    {phoneCount > 1 && (
+                      <span className="ml-1 text-green-600 font-medium">+{phoneCount - 1} more</span>
+                    )}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground/50">No phone</span>
+                )}
+              </div>
+
+              {/* Email with count */}
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <Mail className="h-3 w-3" />
+                {emailCount > 0 ? (
+                  <span className="truncate">
+                    {lead.email || metadata?.emails?.[0]}
+                    {emailCount > 1 && (
+                      <span className="ml-1 text-green-600 font-medium">+{emailCount - 1} more</span>
+                    )}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground/50">No email</span>
+                )}
+              </div>
 
               {lead.googleRating && (
                 <div className="flex items-center gap-1 text-xs">
