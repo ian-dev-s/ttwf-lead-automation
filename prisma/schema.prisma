@@ -48,6 +48,8 @@ enum AIProvider {
   OPENAI
   ANTHROPIC
   GOOGLE
+  GITHUB
+  CURSOR
 }
 
 // Scraping job status

@@ -8,15 +8,15 @@ import { Loader2 } from 'lucide-react';
 import { signIn } from 'next-auth/react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get('callbackUrl') || '/';
   
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const emailRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -24,6 +24,10 @@ export default function LoginPage() {
     e.preventDefault();
     setError(null);
     setIsLoading(true);
+
+    // Read values directly from DOM to support browser automation
+    const email = emailRef.current?.value || '';
+    const password = passwordRef.current?.value || '';
 
     try {
       const result = await signIn('credentials', {
@@ -71,8 +75,7 @@ export default function LoginPage() {
               <Input
                 id="email"
                 type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                ref={emailRef}
                 placeholder="you@example.com"
                 required
                 autoComplete="email"
@@ -84,8 +87,7 @@ export default function LoginPage() {
               <Input
                 id="password"
                 type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                ref={passwordRef}
                 placeholder="Enter your password"
                 required
                 autoComplete="current-password"

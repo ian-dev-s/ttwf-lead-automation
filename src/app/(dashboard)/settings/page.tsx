@@ -17,7 +17,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { modelOptions, providerDisplayNames } from '@/lib/ai/providers';
 import { AIProvider } from '@prisma/client';
-import { Brain, Loader2, MessageSquare, Save, Search } from 'lucide-react';
+import { Brain, ExternalLink, Loader2, MessageSquare, Save, Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 interface SystemSettings {
@@ -176,6 +176,67 @@ export default function SettingsPage() {
 
           {/* AI Configuration Tab */}
           <TabsContent value="ai" className="space-y-4">
+            {/* API Keys Help Card */}
+            <Card className="border-dashed border-muted-foreground/30">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">API Keys Setup</CardTitle>
+                <CardDescription>
+                  Add your API keys to the <code className="bg-muted px-1.5 py-0.5 rounded text-xs">.env</code> file to enable providers:
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
+                  <div className="space-y-1">
+                    <div className="font-medium flex items-center gap-2">
+                      OpenAI
+                      <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" className="text-muted-foreground hover:text-primary">
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    </div>
+                    <code className="text-xs text-muted-foreground">OPENAI_API_KEY=sk-...</code>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="font-medium flex items-center gap-2">
+                      Anthropic
+                      <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" className="text-muted-foreground hover:text-primary">
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    </div>
+                    <code className="text-xs text-muted-foreground">ANTHROPIC_API_KEY=sk-ant-...</code>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="font-medium flex items-center gap-2">
+                      Google AI
+                      <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" className="text-muted-foreground hover:text-primary">
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    </div>
+                    <code className="text-xs text-muted-foreground">GOOGLE_AI_API_KEY=AI...</code>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="font-medium flex items-center gap-2">
+                      GitHub Copilot
+                      <a href="https://github.com/settings/tokens" target="_blank" rel="noopener" className="text-muted-foreground hover:text-primary">
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    </div>
+                    <code className="text-xs text-muted-foreground">GITHUB_TOKEN=ghp_...</code>
+                    <p className="text-xs text-muted-foreground">Requires Copilot subscription</p>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="font-medium flex items-center gap-2">
+                      Cursor AI
+                      <a href="https://cursor.sh" target="_blank" rel="noopener" className="text-muted-foreground hover:text-primary">
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    </div>
+                    <code className="text-xs text-muted-foreground">CURSOR_API_KEY=...</code>
+                    <p className="text-xs text-muted-foreground">From Cursor IDE settings</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
             <Card>
               <CardHeader>
                 <CardTitle>AI Provider Configuration</CardTitle>
