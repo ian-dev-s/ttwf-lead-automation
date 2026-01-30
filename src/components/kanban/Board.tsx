@@ -16,9 +16,11 @@ export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
   const [leads, setLeads] = useState<Lead[]>(initialLeads);
   const [isUpdating, setIsUpdating] = useState(false);
 
-  // Group leads by status
+  // Group leads by status and sort alphabetically by business name
   const leadsByStatus = kanbanColumnOrder.reduce((acc, status) => {
-    acc[status] = leads.filter((lead) => lead.status === status);
+    acc[status] = leads
+      .filter((lead) => lead.status === status)
+      .sort((a, b) => a.businessName.localeCompare(b.businessName));
     return acc;
   }, {} as Record<LeadStatus, Lead[]>);
 

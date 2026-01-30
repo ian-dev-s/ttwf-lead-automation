@@ -5,7 +5,17 @@ import { MessagePreview } from '@/components/messages/MessagePreview';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
 import {
     formatDateTime,
     formatPhoneNumber,
@@ -26,6 +36,7 @@ import {
     Phone,
     Sparkles,
     Star,
+    XCircle,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
@@ -46,6 +57,39 @@ export function LeadDetail({ lead }: LeadDetailProps) {
   const router = useRouter();
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingType, setGeneratingType] = useState<MessageType | null>(null);
+  const [showRejectDialog, setShowRejectDialog] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
+  const [isRejecting, setIsRejecting] = useState(false);
+
+  const handleRejectLead = async () => {
+    setIsRejecting(true);
+    try {
+      const existingNotes = lead.notes || '';
+      const timestamp = new Date().toLocaleDateString();
+      const newNotes = existingNotes
+        ? `${existingNotes}\n\n--- Rejected on ${timestamp} ---\n${rejectReason}`
+        : `--- Rejected on ${timestamp} ---\n${rejectReason}`;
+
+      const response = await fetch(`/api/leads/${lead.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'NOT_INTERESTED',
+          notes: newNotes,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to reject lead');
+
+      setShowRejectDialog(false);
+      setRejectReason('');
+      router.refresh();
+    } catch (error) {
+      console.error('Error rejecting lead:', error);
+    } finally {
+      setIsRejecting(false);
+    }
+  };
 
   const handleGenerateMessage = async (type: MessageType) => {
     setIsGenerating(true);
@@ -93,8 +137,61 @@ export function LeadDetail({ lead }: LeadDetailProps) {
             {leadStatusLabels[lead.status]}
           </Badge>
           <Badge variant="secondary">Score: {lead.score}</Badge>
+          {lead.status !== 'NOT_INTERESTED' && lead.status !== 'INVALID' && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setShowRejectDialog(true)}
+            >
+              <XCircle className="h-4 w-4 mr-2" />
+              Reject Lead
+            </Button>
+          )}
         </div>
       </div>
+
+      {/* Reject Lead Dialog */}
+      <Dialog open={showRejectDialog} onOpenChange={setShowRejectDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject Lead</DialogTitle>
+            <DialogDescription>
+              Provide a reason for rejecting this lead. This will be saved to the notes.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="reject-reason">Rejection Reason</Label>
+              <Textarea
+                id="reject-reason"
+                placeholder="e.g., Not a good fit, Already has a provider, Duplicate entry..."
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                rows={4}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowRejectDialog(false);
+                setRejectReason('');
+              }}
+              disabled={isRejecting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleRejectLead}
+              disabled={isRejecting || !rejectReason.trim()}
+            >
+              {isRejecting ? 'Rejecting...' : 'Reject Lead'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Tabs defaultValue="details" className="space-y-4">
         <TabsList>

@@ -327,9 +327,9 @@ export function ApprovalGate({ message, onApprove, onReject }: ApprovalGateProps
 
           <div className="flex gap-2">
             <Button
-              variant="outline"
               onClick={() => setShowConfirmDialog(true)}
               disabled={isApproving || isRejecting}
+              className="bg-green-600 hover:bg-green-700 text-white"
             >
               <CheckCircle className="h-4 w-4 mr-2" />
               {isApproving ? 'Approving...' : 'Approve'}

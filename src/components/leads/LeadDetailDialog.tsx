@@ -4,15 +4,20 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
+import { Textarea } from "@/components/ui/textarea"
 import { Lead } from "@prisma/client"
-import { ExternalLink, Mail, MapPin, Phone, Star } from "lucide-react"
+import { ExternalLink, Mail, MapPin, Phone, Star, XCircle } from "lucide-react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { useState } from "react"
 import { formatPhoneNumber, getWhatsAppUrl, leadStatusColors, leadStatusLabels } from "@/lib/utils"
 
 interface LeadDetailDialogProps {
@@ -22,12 +27,48 @@ interface LeadDetailDialogProps {
 }
 
 export function LeadDetailDialog({ lead, open, onOpenChange }: LeadDetailDialogProps) {
+  const router = useRouter()
+  const [showRejectDialog, setShowRejectDialog] = useState(false)
+  const [rejectReason, setRejectReason] = useState('')
+  const [isRejecting, setIsRejecting] = useState(false)
+
   if (!lead) return null
 
   // Helper to safely get metadata arrays
   const metadata = lead.metadata as { phones?: string[]; emails?: string[] } | null
   const allPhones = metadata?.phones || (lead.phone ? [lead.phone] : [])
   const allEmails = metadata?.emails || (lead.email ? [lead.email] : [])
+
+  const handleRejectLead = async () => {
+    setIsRejecting(true)
+    try {
+      const existingNotes = lead.notes || ''
+      const timestamp = new Date().toLocaleDateString()
+      const newNotes = existingNotes
+        ? `${existingNotes}\n\n--- Rejected on ${timestamp} ---\n${rejectReason}`
+        : `--- Rejected on ${timestamp} ---\n${rejectReason}`
+
+      const response = await fetch(`/api/leads/${lead.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'NOT_INTERESTED',
+          notes: newNotes,
+        }),
+      })
+
+      if (!response.ok) throw new Error('Failed to reject lead')
+
+      setShowRejectDialog(false)
+      setRejectReason('')
+      onOpenChange(false)
+      router.refresh()
+    } catch (error) {
+      console.error('Error rejecting lead:', error)
+    } finally {
+      setIsRejecting(false)
+    }
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -153,13 +194,65 @@ export function LeadDetailDialog({ lead, open, onOpenChange }: LeadDetailDialogP
             </>
           )}
 
-          <div className="flex justify-end pt-4">
-            <Button asChild>
+          <div className="flex justify-between pt-4">
+            {lead.status !== 'NOT_INTERESTED' && lead.status !== 'INVALID' && (
+              <Button
+                variant="destructive"
+                onClick={() => setShowRejectDialog(true)}
+              >
+                <XCircle className="h-4 w-4 mr-2" />
+                Reject Lead
+              </Button>
+            )}
+            <Button asChild className={lead.status === 'NOT_INTERESTED' || lead.status === 'INVALID' ? '' : 'ml-auto'}>
               <Link href={`/leads/${lead.id}`}>View Full Details</Link>
             </Button>
           </div>
         </div>
       </DialogContent>
+
+      {/* Reject Lead Dialog */}
+      <Dialog open={showRejectDialog} onOpenChange={setShowRejectDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject Lead</DialogTitle>
+            <DialogDescription>
+              Provide a reason for rejecting this lead. This will be saved to the notes.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="reject-reason-dialog">Rejection Reason</Label>
+              <Textarea
+                id="reject-reason-dialog"
+                placeholder="e.g., Not a good fit, Already has a provider, Duplicate entry..."
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                rows={4}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowRejectDialog(false)
+                setRejectReason('')
+              }}
+              disabled={isRejecting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleRejectLead}
+              disabled={isRejecting || !rejectReason.trim()}
+            >
+              {isRejecting ? 'Rejecting...' : 'Reject Lead'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   )
 }
