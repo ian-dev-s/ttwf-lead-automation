@@ -110,69 +110,103 @@ async function extractBusinessDetails(
   workerId: number
 ): Promise<ScrapedBusiness | null> {
   try {
-    // Wait for the details panel to load - look for the business info section
-    await sleep(500);
+    // Wait for panel to stabilize
+    await sleep(800);
 
-    // The business name in Google Maps is in a specific container
-    // Try multiple selectors to find the business name
+    // Extract business name - try multiple approaches
     let name: string | null = null;
     
-    // Try the main business title (inside the details panel)
-    const titleSelectors = [
-      'div[role="main"] h1',
-      '[data-attrid="title"] span',
-      'h1.DUwDvf',
-      'h1[data-attrid="title"]',
-    ];
-    
-    for (const selector of titleSelectors) {
-      const text = await page.locator(selector).first().textContent({ timeout: 1000 }).catch(() => null);
-      if (text && text.length > 2 && !text.toLowerCase().includes('results')) {
-        name = text;
+    // Method 1: Look for the first h1 that's not "Results"
+    const h1Elements = await page.locator('h1').all();
+    for (const h1 of h1Elements) {
+      const text = await h1.textContent({ timeout: 500 }).catch(() => null);
+      if (text && text.length > 2 && text.length < 100 && 
+          !text.toLowerCase().includes('results') &&
+          !text.toLowerCase().includes('google maps')) {
+        name = text.trim();
         break;
+      }
+    }
+    
+    // Method 2: Try to get name from the URL
+    if (!name) {
+      const url = page.url();
+      const placeMatch = url.match(/\/place\/([^\/]+)/);
+      if (placeMatch) {
+        name = decodeURIComponent(placeMatch[1]).replace(/\+/g, ' ');
       }
     }
     
     if (!name) return null;
 
-    // Extract address
-    const address = await page
-      .locator('[data-item-id="address"] .fontBodyMedium')
-      .textContent({ timeout: 2000 })
-      .catch(() => null);
+    // Extract address - try multiple selectors
+    let address: string | null = null;
+    const addressSelectors = [
+      '[data-item-id="address"] .fontBodyMedium',
+      '[data-item-id="address"]',
+      'button[data-item-id="address"]',
+    ];
+    for (const sel of addressSelectors) {
+      address = await page.locator(sel).first().textContent({ timeout: 1000 }).catch(() => null);
+      if (address) break;
+    }
 
-    // Extract ALL phone numbers from the Google Maps UI elements only
+    // Extract ALL phone numbers
     const phones: string[] = [];
     try {
-      const phoneElements = await page.locator('[data-item-id^="phone:"] .fontBodyMedium').all();
+      // Method 1: From phone elements
+      const phoneElements = await page.locator('[data-item-id^="phone:"]').all();
       for (const phoneEl of phoneElements) {
-        const phoneText = await phoneEl.textContent({ timeout: 1000 }).catch(() => null);
+        const phoneText = await phoneEl.textContent({ timeout: 500 }).catch(() => null);
         if (phoneText) {
-          const cleanPhone = phoneText.trim();
-          if (cleanPhone && !phones.includes(cleanPhone)) {
+          // Extract just the phone number part
+          const cleanPhone = phoneText.replace(/[^0-9+\-\s()]/g, '').trim();
+          if (cleanPhone && cleanPhone.length >= 10 && !phones.includes(cleanPhone)) {
             phones.push(cleanPhone);
           }
         }
       }
+      
+      // Method 2: Look for phone patterns in aria-labels
+      const phoneLinks = await page.locator('a[data-item-id^="phone:"], button[data-item-id^="phone:"]').all();
+      for (const link of phoneLinks) {
+        const ariaLabel = await link.getAttribute('aria-label').catch(() => null);
+        if (ariaLabel) {
+          const phoneMatch = ariaLabel.match(/[\d\s+()-]{10,}/);
+          if (phoneMatch && !phones.includes(phoneMatch[0].trim())) {
+            phones.push(phoneMatch[0].trim());
+          }
+        }
+      }
     } catch {
-      // Phone extraction failed, continue
+      // Phone extraction failed, continue with empty array
     }
 
     // Extract website
-    const website = await page
-      .locator('[data-item-id="authority"] a')
-      .getAttribute('href', { timeout: 2000 })
-      .catch(() => null);
+    let website: string | null = null;
+    try {
+      website = await page.locator('[data-item-id="authority"] a').getAttribute('href', { timeout: 1500 }).catch(() => null);
+      if (!website) {
+        // Try alternative selector
+        website = await page.locator('a[data-item-id="authority"]').getAttribute('href', { timeout: 1000 }).catch(() => null);
+      }
+    } catch {
+      // Website extraction failed
+    }
 
-    // Extract rating
+    // Extract rating from aria-label
     let rating: number | undefined;
     try {
-      const ratingText = await page
-        .locator('[role="img"][aria-label*="stars"]')
-        .getAttribute('aria-label', { timeout: 2000 });
-      if (ratingText) {
-        const match = ratingText.match(/([\d.]+)\s*stars?/i);
-        if (match) rating = parseFloat(match[1]);
+      const ratingElements = await page.locator('[aria-label*="star"]').all();
+      for (const el of ratingElements) {
+        const ariaLabel = await el.getAttribute('aria-label').catch(() => null);
+        if (ariaLabel) {
+          const match = ariaLabel.match(/([\d.]+)\s*star/i);
+          if (match) {
+            rating = parseFloat(match[1]);
+            break;
+          }
+        }
       }
     } catch {
       // Rating extraction failed
@@ -181,13 +215,16 @@ async function extractBusinessDetails(
     // Extract review count
     let reviewCount: number | undefined;
     try {
-      const reviewText = await page
-        .locator('[aria-label*="reviews"]')
-        .first()
-        .textContent({ timeout: 2000 });
-      if (reviewText) {
-        const match = reviewText.match(/\(([\d,]+)\)/);
-        if (match) reviewCount = parseInt(match[1].replace(/,/g, ''));
+      const reviewElements = await page.locator('[aria-label*="review"]').all();
+      for (const el of reviewElements) {
+        const text = await el.textContent().catch(() => null);
+        if (text) {
+          const match = text.match(/\(([\d,]+)\)/);
+          if (match) {
+            reviewCount = parseInt(match[1].replace(/,/g, ''));
+            break;
+          }
+        }
       }
     } catch {
       // Review count extraction failed
@@ -196,7 +233,8 @@ async function extractBusinessDetails(
     // Extract category
     const category = await page
       .locator('button[jsaction*="category"]')
-      .textContent({ timeout: 2000 })
+      .first()
+      .textContent({ timeout: 1000 })
       .catch(() => null);
 
     const currentUrl = page.url();
@@ -205,7 +243,7 @@ async function extractBusinessDetails(
       name: name.trim(),
       address: address?.trim() || '',
       phones,
-      emails: [], // Skip email extraction for now - too heavy
+      emails: [],
       website: website?.trim(),
       rating,
       reviewCount,
@@ -213,7 +251,7 @@ async function extractBusinessDetails(
       category: category?.trim(),
     };
   } catch (error) {
-    console.error(`   [Worker ${workerId}] Error extracting details:`, error);
+    // Silently fail - don't log every extraction error
     return null;
   }
 }
@@ -290,19 +328,17 @@ async function scrapeGoogleMaps(
           continue;
         }
 
-        // Check if this is a good prospect (no website or low-quality site)
-        const isGoodProspect = !business.website || 
-          business.website.includes('facebook.com') || 
-          business.website.includes('instagram.com') ||
-          business.website.includes('yellowpages') ||
-          business.website.includes('gumtree');
+        // Check if this is a good prospect based on website quality
+        const prospectCheck = isGoodProspect(business.website);
 
-        // Only include businesses with good ratings that need websites
-        if (isGoodProspect && business.rating && business.rating >= 3.5) {
+        // Include if: good prospect AND has decent rating (3.0+)
+        if (prospectCheck.isGood && business.rating && business.rating >= 3.0) {
           results.push(business);
-          console.log(`   [Worker ${workerId}] ✓ Found: ${business.name} (${business.rating}⭐, ${business.phones.length} phones)`);
+          console.log(`   [Worker ${workerId}] ✓ Found: ${business.name} (${business.rating}⭐, ${business.phones.length} phones) [${prospectCheck.reason}]`);
+        } else if (!prospectCheck.isGood) {
+          console.log(`   [Worker ${workerId}] Skip: ${business.name} - ${prospectCheck.reason}`);
         } else {
-          console.log(`   [Worker ${workerId}] Listing ${i+1}: ${business.name} - skipped (has website or low rating)`);
+          console.log(`   [Worker ${workerId}] Skip: ${business.name} - Low rating (${business.rating || 'N/A'})`);
         }
       } catch (err: any) {
         console.log(`   [Worker ${workerId}] Listing ${i+1}: Error - ${err?.message || err}`);
@@ -316,11 +352,87 @@ async function scrapeGoogleMaps(
   return results;
 }
 
+// Check if website is a social media or directory listing (always good prospects)
+function isSocialOrDirectory(website: string): boolean {
+  const socialPatterns = [
+    'facebook.com',
+    'instagram.com',
+    'twitter.com',
+    'linkedin.com',
+    'yellowpages',
+    'gumtree',
+    'locanto',
+    'hotfrog',
+    'cylex',
+    'brabys',
+    'findit',
+    'snupit',
+    'yell.com',
+    'yelp.com',
+  ];
+  return socialPatterns.some(pattern => website.toLowerCase().includes(pattern));
+}
+
+// Check if website is likely a poor quality DIY/template site (still good prospects)
+function isPoorQualityWebsite(website: string): boolean {
+  const poorQualityPatterns = [
+    // Free website builders
+    'wix.com',
+    'wixsite.com',
+    'weebly.com',
+    'wordpress.com', // Note: wordpress.com (hosted) not .org
+    'squarespace.com',
+    'webnode.com',
+    'jimdo.com',
+    'site123.com',
+    'webs.com',
+    'yola.com',
+    'strikingly.com',
+    'carrd.co',
+    'webflow.io',
+    'netlify.app',
+    'vercel.app',
+    'herokuapp.com',
+    'blogspot.com',
+    'blogger.com',
+    'tumblr.com',
+    // South African free hosting
+    'co.za.com',
+    'za.com',
+    'mweb.co.za/sites',
+    // Generic indicators of basic sites
+    'sites.google.com',
+    'google.com/site',
+  ];
+  return poorQualityPatterns.some(pattern => website.toLowerCase().includes(pattern));
+}
+
+// Determine if this is a good prospect based on website quality
+function isGoodProspect(website: string | undefined): { isGood: boolean; reason: string } {
+  // No website = perfect prospect
+  if (!website) {
+    return { isGood: true, reason: 'NO_WEBSITE' };
+  }
+  
+  // Social media or directory = good prospect
+  if (isSocialOrDirectory(website)) {
+    return { isGood: true, reason: 'SOCIAL_OR_DIRECTORY' };
+  }
+  
+  // Poor quality DIY website = good prospect (they need a better one)
+  if (isPoorQualityWebsite(website)) {
+    return { isGood: true, reason: 'POOR_QUALITY_SITE' };
+  }
+  
+  // Has a proper domain website = skip (they probably don't need our help)
+  return { isGood: false, reason: 'HAS_QUALITY_WEBSITE' };
+}
+
 function calculateWebsiteScore(website: string | null | undefined): number {
-  if (!website) return 0;
-  if (website.includes('facebook.com') || website.includes('instagram.com')) return 20;
-  if (website.includes('yellowpages') || website.includes('gumtree')) return 30;
-  return 60;
+  if (!website) return 0; // No website = best prospect
+  if (isSocialOrDirectory(website)) return 15; // Social only = great prospect
+  if (isPoorQualityWebsite(website)) return 30; // Poor website = good prospect
+  return 70; // Has proper website = lower priority
 }
 
 async function saveLeadToDatabase(
@@ -331,10 +443,12 @@ async function saveLeadToDatabase(
 ): Promise<boolean> {
   try {
     const websiteScore = calculateWebsiteScore(business.website);
+    const prospectCheck = isGoodProspect(business.website);
+    
     const leadScore = Math.round(
       (business.rating || 4) * 15 +
       Math.min((business.reviewCount || 0) / 10, 20) +
-      (100 - websiteScore) * 0.3
+      (100 - websiteScore) * 0.4 // Increased weight for website quality
     );
 
     const primaryPhone = business.phones[0] || null;
@@ -355,11 +469,17 @@ async function saveLeadToDatabase(
       return false;
     }
 
-    // Build notes
+    // Build notes based on prospect reason
+    const reasonNotes: Record<string, string> = {
+      'NO_WEBSITE': '🎯 NO WEBSITE - Perfect prospect!',
+      'SOCIAL_OR_DIRECTORY': '📱 Only has social media/directory listing - Great prospect!',
+      'POOR_QUALITY_SITE': '🔧 Has poor quality/DIY website - Good prospect for upgrade!',
+    };
+    
     const notes = [
       `Scraped from Google Maps.`,
-      !business.website ? 'NO WEBSITE - Great prospect!' : `Website: ${business.website}`,
-      business.phones.length > 1 ? `Additional phones: ${business.phones.slice(1).join(', ')}` : '',
+      reasonNotes[prospectCheck.reason] || `Website: ${business.website}`,
+      business.phones.length > 1 ? `📞 Additional phones: ${business.phones.slice(1).join(', ')}` : '',
     ].filter(Boolean).join(' ');
 
     // Create the lead
