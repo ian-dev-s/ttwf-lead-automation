@@ -2,7 +2,7 @@
  * Script to scrape REAL South African businesses from Google Maps
  * Run with: npx tsx scripts/scrape-real-leads.ts
  * 
- * Optimized for parallel execution with multiple browser contexts
+ * Optimized for stability and parallel execution
  */
 
 import { PrismaClient } from '@prisma/client';
@@ -10,21 +10,22 @@ import { Browser, BrowserContext, chromium, Page } from 'playwright';
 
 const prisma = new PrismaClient();
 
-// Configuration
-const PARALLEL_WORKERS = 4; // Number of parallel browser contexts
-const MAX_RESULTS_PER_SEARCH = 100; // Max results per search query
+// Configuration - reduced for stability
+const PARALLEL_WORKERS = 5; // Single worker for debugging
+const MAX_RESULTS_PER_SEARCH = 100; // Reduced for testing
+const DELAY_BETWEEN_LISTINGS = 1000; // ms between clicking listings
+const DELAY_BETWEEN_SEARCHES = 1500; // ms between searches
 
 interface ScrapedBusiness {
   name: string;
   address: string;
-  phones: string[];  // All phone numbers (cell, landline, etc.)
-  emails: string[];  // All email addresses found
+  phones: string[];
+  emails: string[];
   website?: string;
   rating?: number;
   reviewCount?: number;
   googleMapsUrl: string;
   category?: string;
-  placeId?: string;
 }
 
 interface WorkItem {
@@ -83,6 +84,10 @@ const INDUSTRIES = [
 // Shared counter for tracking progress across workers
 let totalAdded = 0;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function shuffleArray<T>(array: T[]): T[] {
   const shuffled = [...array];
   for (let i = shuffled.length - 1; i > 0; i--) {
@@ -100,12 +105,124 @@ function chunkArray<T>(array: T[], numChunks: number): T[][] {
   return chunks;
 }
 
+async function extractBusinessDetails(
+  page: Page,
+  workerId: number
+): Promise<ScrapedBusiness | null> {
+  try {
+    // Wait for the details panel to load - look for the business info section
+    await sleep(500);
+
+    // The business name in Google Maps is in a specific container
+    // Try multiple selectors to find the business name
+    let name: string | null = null;
+    
+    // Try the main business title (inside the details panel)
+    const titleSelectors = [
+      'div[role="main"] h1',
+      '[data-attrid="title"] span',
+      'h1.DUwDvf',
+      'h1[data-attrid="title"]',
+    ];
+    
+    for (const selector of titleSelectors) {
+      const text = await page.locator(selector).first().textContent({ timeout: 1000 }).catch(() => null);
+      if (text && text.length > 2 && !text.toLowerCase().includes('results')) {
+        name = text;
+        break;
+      }
+    }
+    
+    if (!name) return null;
+
+    // Extract address
+    const address = await page
+      .locator('[data-item-id="address"] .fontBodyMedium')
+      .textContent({ timeout: 2000 })
+      .catch(() => null);
+
+    // Extract ALL phone numbers from the Google Maps UI elements only
+    const phones: string[] = [];
+    try {
+      const phoneElements = await page.locator('[data-item-id^="phone:"] .fontBodyMedium').all();
+      for (const phoneEl of phoneElements) {
+        const phoneText = await phoneEl.textContent({ timeout: 1000 }).catch(() => null);
+        if (phoneText) {
+          const cleanPhone = phoneText.trim();
+          if (cleanPhone && !phones.includes(cleanPhone)) {
+            phones.push(cleanPhone);
+          }
+        }
+      }
+    } catch {
+      // Phone extraction failed, continue
+    }
+
+    // Extract website
+    const website = await page
+      .locator('[data-item-id="authority"] a')
+      .getAttribute('href', { timeout: 2000 })
+      .catch(() => null);
+
+    // Extract rating
+    let rating: number | undefined;
+    try {
+      const ratingText = await page
+        .locator('[role="img"][aria-label*="stars"]')
+        .getAttribute('aria-label', { timeout: 2000 });
+      if (ratingText) {
+        const match = ratingText.match(/([\d.]+)\s*stars?/i);
+        if (match) rating = parseFloat(match[1]);
+      }
+    } catch {
+      // Rating extraction failed
+    }
+
+    // Extract review count
+    let reviewCount: number | undefined;
+    try {
+      const reviewText = await page
+        .locator('[aria-label*="reviews"]')
+        .first()
+        .textContent({ timeout: 2000 });
+      if (reviewText) {
+        const match = reviewText.match(/\(([\d,]+)\)/);
+        if (match) reviewCount = parseInt(match[1].replace(/,/g, ''));
+      }
+    } catch {
+      // Review count extraction failed
+    }
+
+    // Extract category
+    const category = await page
+      .locator('button[jsaction*="category"]')
+      .textContent({ timeout: 2000 })
+      .catch(() => null);
+
+    const currentUrl = page.url();
+
+    return {
+      name: name.trim(),
+      address: address?.trim() || '',
+      phones,
+      emails: [], // Skip email extraction for now - too heavy
+      website: website?.trim(),
+      rating,
+      reviewCount,
+      googleMapsUrl: currentUrl,
+      category: category?.trim(),
+    };
+  } catch (error) {
+    console.error(`   [Worker ${workerId}] Error extracting details:`, error);
+    return null;
+  }
+}
+
 async function scrapeGoogleMaps(
   page: Page,
   query: string,
   location: string,
-  workerId: number,
-  maxResults: number = MAX_RESULTS_PER_SEARCH
+  workerId: number
 ): Promise<ScrapedBusiness[]> {
   const results: ScrapedBusiness[] = [];
   const searchQuery = `${query} ${location} South Africa`;
@@ -120,154 +237,76 @@ async function scrapeGoogleMaps(
       const acceptButton = page.locator('button:has-text("Accept all")');
       if (await acceptButton.isVisible({ timeout: 2000 })) {
         await acceptButton.click();
+        await sleep(500);
       }
     } catch {
       // No cookie prompt
     }
 
     // Wait for results feed to appear
-    await page.waitForSelector('[role="feed"]', { timeout: 15000 }).catch(() => null);
+    const feedFound = await page.waitForSelector('[role="feed"]', { timeout: 10000 }).catch(() => null);
+    if (!feedFound) {
+      console.log(`   [Worker ${workerId}] No results feed found`);
+      return results;
+    }
 
-    // Scroll to load more results - use a timeout instead of networkidle
-    for (let i = 0; i < 5; i++) {
+    // Scroll to load more results
+    for (let i = 0; i < 3; i++) {
       await page.evaluate(() => {
         const feed = document.querySelector('[role="feed"]');
         if (feed) feed.scrollTop = feed.scrollHeight;
       });
-      // Brief wait for content to load after scroll
-      await page.waitForTimeout(500);
+      await sleep(500);
     }
 
-    // Get all listings
-    const listings = await page.locator('[role="feed"] > div > div > a[href*="/maps/place"]').all();
-    console.log(`   [Worker ${workerId}] Found ${listings.length} listings`);
+    // Get all listings using a simpler selector
+    const listings = await page.locator('a[href*="/maps/place"]').all();
+    const listingCount = Math.min(listings.length, MAX_RESULTS_PER_SEARCH);
+    console.log(`   [Worker ${workerId}] Found ${listings.length} listings, processing ${listingCount}`);
 
-    for (let i = 0; i < Math.min(listings.length, maxResults); i++) {
+    for (let i = 0; i < listingCount; i++) {
       try {
-        const listing = listings[i];
-        await listing.click();
+        // Re-query listings each time as DOM may change after clicks
+        const currentListings = await page.locator('a[href*="/maps/place"]').all();
+        if (i >= currentListings.length) break;
         
-        // Wait for the details panel to load
-        await page.waitForSelector('h1', { timeout: 5000 }).catch(() => null);
+        const listing = currentListings[i];
+        
+        // Click on the listing
+        await listing.click().catch(() => {});
+        await sleep(DELAY_BETWEEN_LISTINGS + 200);
+        
+        // Wait for h1 to appear (business name)
+        const h1Visible = await page.locator('h1').first().isVisible({ timeout: 3000 }).catch(() => false);
+        if (!h1Visible) {
+          console.log(`   [Worker ${workerId}] Listing ${i+1}: No details panel`);
+          continue;
+        }
 
         // Extract business details
-        const name = await page.locator('h1').first().textContent().catch(() => null);
-        if (!name) continue;
-
-        const address = await page
-          .locator('[data-item-id="address"] .fontBodyMedium')
-          .textContent()
-          .catch(() => null);
-
-        // Extract ALL phone numbers (cell, landline, fax, etc.)
-        const phoneElements = await page.locator('[data-item-id^="phone:"] .fontBodyMedium').all();
-        const phones: string[] = [];
-        for (const phoneEl of phoneElements) {
-          const phoneText = await phoneEl.textContent().catch(() => null);
-          if (phoneText) {
-            const cleanPhone = phoneText.trim();
-            if (cleanPhone && !phones.includes(cleanPhone)) {
-              phones.push(cleanPhone);
-            }
-          }
+        const business = await extractBusinessDetails(page, workerId);
+        if (!business) {
+          console.log(`   [Worker ${workerId}] Listing ${i+1}: Extraction failed`);
+          continue;
         }
 
-        // Also check for additional contact info in the about section
-        const additionalPhones = await page.evaluate(() => {
-          const phoneRegex = /(?:\+27|0)[\s.-]?\d{2}[\s.-]?\d{3}[\s.-]?\d{4}/g;
-          const pageText = document.body.innerText;
-          const matches = pageText.match(phoneRegex) || [];
-          return Array.from(new Set(matches));
-        });
-        for (const phone of additionalPhones) {
-          const cleanPhone = phone.trim();
-          if (cleanPhone && !phones.includes(cleanPhone)) {
-            phones.push(cleanPhone);
-          }
+        // Check if this is a good prospect (no website or low-quality site)
+        const isGoodProspect = !business.website || 
+          business.website.includes('facebook.com') || 
+          business.website.includes('instagram.com') ||
+          business.website.includes('yellowpages') ||
+          business.website.includes('gumtree');
+
+        // Only include businesses with good ratings that need websites
+        if (isGoodProspect && business.rating && business.rating >= 3.5) {
+          results.push(business);
+          console.log(`   [Worker ${workerId}] ✓ Found: ${business.name} (${business.rating}⭐, ${business.phones.length} phones)`);
+        } else {
+          console.log(`   [Worker ${workerId}] Listing ${i+1}: ${business.name} - skipped (has website or low rating)`);
         }
-
-        // Extract email addresses from the page
-        const emails: string[] = [];
-        const emailFromPage = await page.evaluate(() => {
-          const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-          const pageText = document.body.innerText;
-          const matches = pageText.match(emailRegex) || [];
-          // Filter out common false positives
-          return Array.from(new Set(matches)).filter(email => 
-            !email.includes('google.com') && 
-            !email.includes('gstatic.com') &&
-            !email.includes('schema.org') &&
-            !email.includes('example.com')
-          );
-        });
-        for (const email of emailFromPage) {
-          if (!emails.includes(email)) {
-            emails.push(email);
-          }
-        }
-
-        const website = await page
-          .locator('[data-item-id="authority"] a')
-          .getAttribute('href')
-          .catch(() => null);
-
-        // Get rating
-        const ratingText = await page
-          .locator('[role="img"][aria-label*="stars"]')
-          .getAttribute('aria-label')
-          .catch(() => null);
-
-        let rating: number | undefined;
-        if (ratingText) {
-          const match = ratingText.match(/([\d.]+)\s*stars?/i);
-          if (match) rating = parseFloat(match[1]);
-        }
-
-        // Get review count
-        const reviewText = await page
-          .locator('[aria-label*="reviews"]')
-          .first()
-          .textContent()
-          .catch(() => null);
-
-        let reviewCount: number | undefined;
-        if (reviewText) {
-          const match = reviewText.match(/\(([\d,]+)\)/);
-          if (match) reviewCount = parseInt(match[1].replace(/,/g, ''));
-        }
-
-        const category = await page
-          .locator('button[jsaction*="category"]')
-          .textContent()
-          .catch(() => null);
-
-        const currentUrl = page.url();
-
-        // We want businesses WITHOUT websites or with low-quality ones
-        // Only include if no website or it looks like a bad one
-        const isGoodProspect = !website || 
-          website.includes('facebook.com') || 
-          website.includes('instagram.com') ||
-          website.includes('yellowpages') ||
-          website.includes('gumtree');
-
-        if (isGoodProspect && rating && rating >= 3.5) {
-          results.push({
-            name: name.trim(),
-            address: address?.trim() || location,
-            phones,
-            emails,
-            website: website?.trim(),
-            rating,
-            reviewCount,
-            googleMapsUrl: currentUrl,
-            category: category?.trim() || query,
-            placeId: currentUrl.match(/!1s([^!]+)/)?.[1],
-          });
-          console.log(`   [Worker ${workerId}] ✓ Found: ${name.trim()} (${rating}⭐, ${phones.length} phones, ${emails.length} emails)`);
-        }
-      } catch (err) {
-        // Continue to next listing
+      } catch (err: any) {
+        console.log(`   [Worker ${workerId}] Listing ${i+1}: Error - ${err?.message || err}`);
+        continue;
       }
     }
   } catch (error) {
@@ -278,10 +317,10 @@ async function scrapeGoogleMaps(
 }
 
 function calculateWebsiteScore(website: string | null | undefined): number {
-  if (!website) return 0; // No website = perfect prospect!
+  if (!website) return 0;
   if (website.includes('facebook.com') || website.includes('instagram.com')) return 20;
   if (website.includes('yellowpages') || website.includes('gumtree')) return 30;
-  return 60; // Has some website
+  return 60;
 }
 
 async function saveLeadToDatabase(
@@ -293,16 +332,14 @@ async function saveLeadToDatabase(
   try {
     const websiteScore = calculateWebsiteScore(business.website);
     const leadScore = Math.round(
-      (business.rating || 4) * 15 + // Rating weight
-      Math.min((business.reviewCount || 0) / 10, 20) + // Reviews weight
-      (100 - websiteScore) * 0.3 // Website quality (lower = better prospect)
+      (business.rating || 4) * 15 +
+      Math.min((business.reviewCount || 0) / 10, 20) +
+      (100 - websiteScore) * 0.3
     );
 
-    // Primary phone and email (first found)
     const primaryPhone = business.phones[0] || null;
-    const primaryEmail = business.emails[0] || null;
 
-    // Check if lead already exists to prevent duplicates
+    // Check if lead already exists
     const existing = await prisma.lead.findFirst({
       where: {
         OR: [
@@ -318,20 +355,18 @@ async function saveLeadToDatabase(
       return false;
     }
 
-    // Build notes with all contact info
-    const contactNotes = [];
-    if (business.phones.length > 1) {
-      contactNotes.push(`Additional phones: ${business.phones.slice(1).join(', ')}`);
-    }
-    if (business.emails.length > 1) {
-      contactNotes.push(`Additional emails: ${business.emails.slice(1).join(', ')}`);
-    }
+    // Build notes
+    const notes = [
+      `Scraped from Google Maps.`,
+      !business.website ? 'NO WEBSITE - Great prospect!' : `Website: ${business.website}`,
+      business.phones.length > 1 ? `Additional phones: ${business.phones.slice(1).join(', ')}` : '',
+    ].filter(Boolean).join(' ');
 
-    // Create the lead with all contact info in metadata
+    // Create the lead
     await prisma.lead.create({
       data: {
         businessName: business.name,
-        email: primaryEmail,
+        email: null,
         phone: primaryPhone,
         website: business.website,
         address: business.address,
@@ -345,24 +380,17 @@ async function saveLeadToDatabase(
         facebookUrl: business.website?.includes('facebook.com') ? business.website : null,
         websiteQuality: websiteScore,
         score: Math.min(100, Math.max(0, leadScore)),
-        notes: [
-          `Scraped from Google Maps.`,
-          !business.website ? 'NO WEBSITE - Great prospect!' : `Website: ${business.website}`,
-          ...contactNotes,
-        ].join(' '),
-        // Store ALL phones and emails in metadata for easy access
+        notes,
         metadata: {
           phones: business.phones,
           emails: business.emails,
           category: business.category,
-          placeId: business.placeId,
         },
       },
     });
 
     return true;
   } catch (error: any) {
-    // Handle unique constraint violations (duplicate entries)
     if (error?.code === 'P2002') {
       console.log(`   [Worker ${workerId}] ⏭️  Skipped duplicate: ${business.name}`);
       return false;
@@ -386,32 +414,78 @@ async function workerTask(
   workerId: number
 ): Promise<number> {
   let workerAdded = 0;
+  let context: BrowserContext | null = null;
+  let page: Page | null = null;
+  let consecutiveErrors = 0;
+  const MAX_CONSECUTIVE_ERRORS = 5;
   
   console.log(`\n🚀 [Worker ${workerId}] Starting with ${workItems.length} search tasks`);
-  
-  const context = await createBrowserContext(browser);
-  const page = await context.newPage();
-  page.setDefaultTimeout(30000);
+
+  // Helper to create/recreate browser context
+  const ensurePage = async (): Promise<Page> => {
+    if (page) {
+      try {
+        // Test if page is still alive
+        await page.evaluate(() => true);
+        return page;
+      } catch {
+        // Page is dead, recreate
+        console.log(`   [Worker ${workerId}] 🔄 Recreating browser context...`);
+      }
+    }
+    
+    // Close old context if exists
+    if (context) {
+      await context.close().catch(() => {});
+    }
+    
+    // Create new context and page
+    context = await createBrowserContext(browser);
+    page = await context.newPage();
+    page.setDefaultTimeout(15000);
+    return page;
+  };
 
   try {
     for (const { city, industry } of workItems) {
       console.log(`\n📍 [Worker ${workerId}] ${city} - ${industry}:`);
 
-      const businesses = await scrapeGoogleMaps(page, industry, city, workerId);
+      try {
+        const activePage = await ensurePage();
+        const businesses = await scrapeGoogleMaps(activePage, industry, city, workerId);
+        consecutiveErrors = 0; // Reset on success
 
-      for (const business of businesses) {
-        const saved = await saveLeadToDatabase(business, industry, city, workerId);
-        if (saved) {
-          totalAdded++;
-          workerAdded++;
-          console.log(`   [Worker ${workerId}] 💾 Saved (total: ${totalAdded})`);
+        for (const business of businesses) {
+          const saved = await saveLeadToDatabase(business, industry, city, workerId);
+          if (saved) {
+            totalAdded++;
+            workerAdded++;
+            console.log(`   [Worker ${workerId}] 💾 Saved (total: ${totalAdded})`);
+          }
         }
+
+        // Small delay between searches
+        await sleep(DELAY_BETWEEN_SEARCHES);
+        
+      } catch (error) {
+        consecutiveErrors++;
+        console.error(`   [Worker ${workerId}] Error (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`, error);
+        
+        // Force page recreation on next iteration
+        page = null;
+        
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          console.error(`   [Worker ${workerId}] Too many consecutive errors, stopping worker`);
+          break;
+        }
+        
+        await sleep(2000); // Wait before retry
       }
     }
-  } catch (error) {
-    console.error(`[Worker ${workerId}] Fatal error:`, error);
   } finally {
-    await context.close();
+    if (context) {
+      await context.close().catch(() => {});
+    }
   }
 
   console.log(`\n✅ [Worker ${workerId}] Finished - added ${workerAdded} leads`);
@@ -419,11 +493,13 @@ async function workerTask(
 }
 
 async function main() {
-  console.log('🔍 TTWF Lead Generator - Real Business Scraper (Parallel Mode)\n');
-  console.log('================================================================\n');
+  console.log('🔍 TTWF Lead Generator - Real Business Scraper\n');
+  console.log('================================================\n');
   console.log(`⚙️  Configuration:`);
   console.log(`   - Parallel workers: ${PARALLEL_WORKERS}`);
-  console.log(`   - Max results per search: ${MAX_RESULTS_PER_SEARCH}\n`);
+  console.log(`   - Max results per search: ${MAX_RESULTS_PER_SEARCH}`);
+  console.log(`   - Delay between listings: ${DELAY_BETWEEN_LISTINGS}ms`);
+  console.log(`   - Delay between searches: ${DELAY_BETWEEN_SEARCHES}ms\n`);
 
   let browser: Browser | null = null;
 
@@ -432,14 +508,14 @@ async function main() {
     const existingCount = await prisma.lead.count();
     console.log(`📊 Existing leads in database: ${existingCount}\n`);
 
-    // Step 1: Launch browser
+    // Launch browser
     console.log('🌐 Launching browser...\n');
     browser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     });
 
-    // Step 2: Build work queue
+    // Build work queue
     const workQueue: WorkItem[] = [];
     const shuffledCities = shuffleArray(SA_CITIES);
     const shuffledIndustries = shuffleArray(INDUSTRIES);
@@ -453,12 +529,12 @@ async function main() {
     console.log(`📋 Total search combinations: ${workQueue.length}`);
     console.log(`   Distributing across ${PARALLEL_WORKERS} workers...\n`);
 
-    // Step 3: Distribute work across workers
+    // Distribute work across workers
     const workChunks = chunkArray(workQueue, PARALLEL_WORKERS);
 
-    // Step 4: Run workers in parallel
+    // Run workers in parallel
     console.log('🔎 Starting parallel scraping...\n');
-    console.log('================================================================\n');
+    console.log('================================================\n');
 
     const startTime = Date.now();
     
@@ -471,15 +547,15 @@ async function main() {
     const endTime = Date.now();
     const duration = Math.round((endTime - startTime) / 1000);
 
-    // Step 5: Report results
-    console.log(`\n================================================================`);
+    // Report results
+    console.log(`\n================================================`);
     console.log(`✅ Scraping complete!`);
-    console.log(`================================================================`);
+    console.log(`================================================`);
     console.log(`   Total leads added: ${totalAdded}`);
     console.log(`   By worker: ${results.map((r, i) => `Worker ${i + 1}: ${r}`).join(', ')}`);
     console.log(`   Duration: ${duration} seconds`);
     console.log(`   Final database count: ${await prisma.lead.count()}`);
-    console.log(`================================================================\n`);
+    console.log(`================================================\n`);
 
   } catch (error) {
     console.error('Fatal error:', error);
