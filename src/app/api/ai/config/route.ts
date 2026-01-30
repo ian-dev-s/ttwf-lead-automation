@@ -28,8 +28,8 @@ export async function GET(_request: NextRequest) {
       orderBy: { createdAt: 'desc' },
     });
 
-    // Get status for each provider (GitHub and Cursor only)
-    const providers: SimpleProvider[] = ['GITHUB', 'CURSOR'];
+    // Get status for OpenRouter
+    const providers: SimpleProvider[] = ['OPENROUTER'];
     const providerStatuses = providers.map(p => getProviderStatus(p));
 
     return NextResponse.json({
@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
     const config = await prisma.aIConfig.create({
       data: {
         name: validatedData.name,
-        provider: validatedData.provider as 'GITHUB' | 'CURSOR',
+        provider: validatedData.provider as 'OPENROUTER',
         model: validatedData.model,
         temperature: validatedData.temperature ?? 0.7,
         maxTokens: validatedData.maxTokens ?? 1000,

@@ -77,6 +77,7 @@ export function LeadDetail({ lead }: LeadDetailProps) {
   const pendingMessages = lead.messages.filter(
     (m) => m.status === 'DRAFT' || m.status === 'PENDING_APPROVAL'
   );
+  const approvedMessages = lead.messages.filter((m) => m.status === 'APPROVED');
   const sentMessages = lead.messages.filter((m) => m.status === 'SENT');
 
   return (
@@ -343,6 +344,18 @@ export function LeadDetail({ lead }: LeadDetailProps) {
               <h3 className="font-semibold">Pending Messages</h3>
               {pendingMessages.map((message) => (
                 <ApprovalGate
+                  key={message.id}
+                  message={{ ...message, lead }}
+                />
+              ))}
+            </div>
+          )}
+
+          {approvedMessages.length > 0 && (
+            <div className="space-y-4">
+              <h3 className="font-semibold text-green-600">Approved Messages (Ready to Send)</h3>
+              {approvedMessages.map((message) => (
+                <MessagePreview
                   key={message.id}
                   message={{ ...message, lead }}
                 />

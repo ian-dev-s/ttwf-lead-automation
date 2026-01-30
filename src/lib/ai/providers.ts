@@ -1,7 +1,7 @@
 import { createOpenAI } from '@ai-sdk/openai';
 
-// Simplified provider type - only GitHub and Cursor
-export type SimpleProvider = 'GITHUB' | 'CURSOR';
+// Single provider - OpenRouter
+export type SimpleProvider = 'OPENROUTER';
 
 // AI Provider configurations
 export interface ProviderConfig {
@@ -11,37 +11,29 @@ export interface ProviderConfig {
   maxTokens?: number;
 }
 
-// Available models - same for both providers
+// Available models via OpenRouter
 export const modelOptions = [
-  { value: 'claude-4.5-haiku', label: 'Claude 4.5 Haiku' },
-  { value: 'gemini-3-flash', label: 'Gemini 3 Flash' },
-  { value: 'gpt-5-mini', label: 'GPT-5 Mini' },
+  { value: 'anthropic/claude-haiku-4.5', label: 'Claude Haiku 4.5' },
+  { value: 'google/gemini-3-flash-preview', label: 'Gemini 3 Flash Preview' },
+  { value: 'openai/gpt-5-mini', label: 'GPT-5 Mini' },
+  { value: 'trinity/trinity-large-preview:free', label: 'Trinity Large Preview (Free)' },
 ];
 
 // Default model
-export const defaultModel = 'claude-4.5-haiku';
+export const defaultModel = 'anthropic/claude-haiku-4.5';
 
-// Provider configurations
+// Provider configuration
 export const providerConfigs: Record<SimpleProvider, {
   name: string;
   envKey: string;
   baseURL: string;
-  tokenPrefix: string;
   setupUrl: string;
 }> = {
-  GITHUB: {
-    name: 'GitHub Copilot',
-    envKey: 'GITHUB_TOKEN',
-    baseURL: 'https://models.inference.ai.azure.com',
-    tokenPrefix: 'ghp_',
-    setupUrl: 'https://github.com/settings/tokens',
-  },
-  CURSOR: {
-    name: 'Cursor AI',
-    envKey: 'CURSOR_API_KEY',
-    baseURL: 'https://api.cursor.sh/v1',
-    tokenPrefix: '',
-    setupUrl: 'https://cursor.sh/settings',
+  OPENROUTER: {
+    name: 'OpenRouter',
+    envKey: 'OPENROUTER_API_KEY',
+    baseURL: 'https://openrouter.ai/api/v1',
+    setupUrl: 'https://openrouter.ai/keys',
   },
 };
 
@@ -79,7 +71,7 @@ export function getMaskedToken(provider: SimpleProvider): string | null {
   
   if (!token) return null;
   
-  // Show first 4 and last 4 characters
+  // Show first 8 and last 4 characters
   if (token.length > 12) {
     return `${token.slice(0, 8)}...${token.slice(-4)}`;
   }
@@ -88,7 +80,7 @@ export function getMaskedToken(provider: SimpleProvider): string | null {
 
 // Get all available providers
 export function getAvailableProviders(): SimpleProvider[] {
-  const providers: SimpleProvider[] = ['GITHUB', 'CURSOR'];
+  const providers: SimpleProvider[] = ['OPENROUTER'];
   return providers.filter(isProviderAvailable);
 }
 
@@ -110,6 +102,5 @@ export function getProviderStatus(provider: SimpleProvider) {
 
 // Provider display names
 export const providerDisplayNames: Record<SimpleProvider, string> = {
-  GITHUB: 'GitHub Copilot',
-  CURSOR: 'Cursor AI',
+  OPENROUTER: 'OpenRouter',
 };

@@ -29,7 +29,7 @@ export async function generatePersonalizedMessage(
   const {
     lead,
     messageType,
-    provider = 'CURSOR',
+    provider = 'OPENROUTER',
     model,
     temperature = 0.7,
     maxTokens = 1000,
@@ -68,7 +68,7 @@ export async function generatePersonalizedMessage(
         system: MESSAGE_SYSTEM_PROMPT,
         prompt: fullPrompt,
         temperature: finalTemperature,
-        maxTokens: finalMaxTokens,
+        maxOutputTokens: finalMaxTokens,
       });
 
       // Parse the result
