@@ -1,12 +1,18 @@
 /**
  * Script to scrape REAL South African businesses from Google Maps
  * Run with: npx tsx scripts/scrape-real-leads.ts
+ * 
+ * Optimized for parallel execution with multiple browser contexts
  */
 
 import { PrismaClient } from '@prisma/client';
-import { chromium, Browser, Page } from 'playwright';
+import { Browser, BrowserContext, chromium, Page } from 'playwright';
 
 const prisma = new PrismaClient();
+
+// Configuration
+const PARALLEL_WORKERS = 4; // Number of parallel browser contexts
+const MAX_RESULTS_PER_SEARCH = 100; // Max results per search query
 
 interface ScrapedBusiness {
   name: string;
@@ -18,6 +24,11 @@ interface ScrapedBusiness {
   googleMapsUrl: string;
   category?: string;
   placeId?: string;
+}
+
+interface WorkItem {
+  city: string;
+  industry: string;
 }
 
 // South African cities to search
@@ -68,68 +79,75 @@ const INDUSTRIES = [
   'carpenter',
 ];
 
-async function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+// Shared counter for tracking progress across workers
+let totalAdded = 0;
+
+function shuffleArray<T>(array: T[]): T[] {
+  const shuffled = [...array];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
 }
 
-async function clearExistingLeads(): Promise<void> {
-  console.log('🗑️  Clearing existing sample leads...');
-  
-  // Delete related messages first
-  await prisma.message.deleteMany({});
-  
-  // Delete leads
-  const result = await prisma.lead.deleteMany({});
-  console.log(`   Deleted ${result.count} existing leads\n`);
+function chunkArray<T>(array: T[], numChunks: number): T[][] {
+  const chunks: T[][] = Array.from({ length: numChunks }, () => []);
+  array.forEach((item, index) => {
+    chunks[index % numChunks].push(item);
+  });
+  return chunks;
 }
 
 async function scrapeGoogleMaps(
   page: Page,
   query: string,
   location: string,
-  maxResults: number = 10
+  workerId: number,
+  maxResults: number = MAX_RESULTS_PER_SEARCH
 ): Promise<ScrapedBusiness[]> {
   const results: ScrapedBusiness[] = [];
   const searchQuery = `${query} ${location} South Africa`;
   const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(searchQuery)}`;
 
   try {
-    console.log(`   Searching: "${searchQuery}"...`);
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await sleep(3000);
+    console.log(`   [Worker ${workerId}] Searching: "${searchQuery}"...`);
+    await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 30000 });
 
     // Accept cookies if prompted
     try {
       const acceptButton = page.locator('button:has-text("Accept all")');
-      if (await acceptButton.isVisible({ timeout: 2000 })) {
+      if (await acceptButton.isVisible({ timeout: 1000 })) {
         await acceptButton.click();
-        await sleep(1000);
       }
     } catch {
       // No cookie prompt
     }
 
-    // Wait for results
+    // Wait for results feed
     await page.waitForSelector('[role="feed"]', { timeout: 10000 }).catch(() => null);
 
     // Scroll to load more results
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
       await page.evaluate(() => {
         const feed = document.querySelector('[role="feed"]');
         if (feed) feed.scrollTop = feed.scrollHeight;
       });
-      await sleep(1500);
+      // Wait for new content to potentially load
+      await page.waitForLoadState('networkidle').catch(() => null);
     }
 
     // Get all listings
     const listings = await page.locator('[role="feed"] > div > div > a[href*="/maps/place"]').all();
-    console.log(`   Found ${listings.length} listings`);
+    console.log(`   [Worker ${workerId}] Found ${listings.length} listings`);
 
     for (let i = 0; i < Math.min(listings.length, maxResults); i++) {
       try {
         const listing = listings[i];
         await listing.click();
-        await sleep(2000);
+        
+        // Wait for the details panel to load
+        await page.waitForSelector('h1', { timeout: 5000 }).catch(() => null);
 
         // Extract business details
         const name = await page.locator('h1').first().textContent().catch(() => null);
@@ -202,53 +220,60 @@ async function scrapeGoogleMaps(
             category: category?.trim() || query,
             placeId: currentUrl.match(/!1s([^!]+)/)?.[1],
           });
-          console.log(`   ✓ Added: ${name.trim()} (${rating}⭐)`);
+          console.log(`   [Worker ${workerId}] ✓ Found: ${name.trim()} (${rating}⭐)`);
         }
-
-        await sleep(1000);
       } catch (err) {
         // Continue to next listing
       }
     }
   } catch (error) {
-    console.error(`   Error searching: ${error}`);
+    console.error(`   [Worker ${workerId}] Error searching: ${error}`);
   }
 
   return results;
 }
 
-async function calculateWebsiteScore(website: string | null | undefined): Promise<number> {
+function calculateWebsiteScore(website: string | null | undefined): number {
   if (!website) return 0; // No website = perfect prospect!
   if (website.includes('facebook.com') || website.includes('instagram.com')) return 20;
   if (website.includes('yellowpages') || website.includes('gumtree')) return 30;
   return 60; // Has some website
 }
 
-async function saveLeadToDatabase(business: ScrapedBusiness, industry: string, location: string): Promise<boolean> {
+async function saveLeadToDatabase(
+  business: ScrapedBusiness, 
+  industry: string, 
+  location: string,
+  workerId: number
+): Promise<boolean> {
   try {
-    // Check if already exists
-    const existing = await prisma.lead.findFirst({
-      where: {
-        OR: [
-          { businessName: business.name },
-          { googleMapsUrl: business.googleMapsUrl },
-        ],
-      },
-    });
-
-    if (existing) return false;
-
-    const websiteScore = await calculateWebsiteScore(business.website);
+    const websiteScore = calculateWebsiteScore(business.website);
     const leadScore = Math.round(
       (business.rating || 4) * 15 + // Rating weight
       Math.min((business.reviewCount || 0) / 10, 20) + // Reviews weight
       (100 - websiteScore) * 0.3 // Website quality (lower = better prospect)
     );
 
+    // Check if lead already exists to prevent duplicates
+    const existing = await prisma.lead.findFirst({
+      where: {
+        OR: [
+          { businessName: business.name, location: location },
+          { googleMapsUrl: business.googleMapsUrl },
+          { businessName: business.name, phone: business.phone },
+        ],
+      },
+    });
+
+    if (existing) {
+      console.log(`   [Worker ${workerId}] ⏭️  Skipped existing: ${business.name}`);
+      return false;
+    }
+
+    // Create the lead
     await prisma.lead.create({
       data: {
         businessName: business.name,
-        contactName: null,
         email: null,
         phone: business.phone,
         website: business.website,
@@ -261,81 +286,132 @@ async function saveLeadToDatabase(business: ScrapedBusiness, industry: string, l
         reviewCount: business.reviewCount,
         googleMapsUrl: business.googleMapsUrl,
         facebookUrl: business.website?.includes('facebook.com') ? business.website : null,
-        websiteQualityScore: websiteScore,
-        leadScore: Math.min(100, Math.max(0, leadScore)),
+        websiteQuality: websiteScore,
+        score: Math.min(100, Math.max(0, leadScore)),
         notes: `Scraped from Google Maps. ${!business.website ? 'NO WEBSITE - Great prospect!' : `Website: ${business.website}`}`,
       },
     });
 
     return true;
-  } catch (error) {
-    console.error(`Error saving lead: ${error}`);
+  } catch (error: any) {
+    // Handle unique constraint violations (duplicate entries)
+    if (error?.code === 'P2002') {
+      console.log(`   [Worker ${workerId}] ⏭️  Skipped duplicate: ${business.name}`);
+      return false;
+    }
+    console.error(`   [Worker ${workerId}] Error saving lead: ${error}`);
     return false;
   }
 }
 
+async function createBrowserContext(browser: Browser): Promise<BrowserContext> {
+  return browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    locale: 'en-ZA',
+  });
+}
+
+async function workerTask(
+  browser: Browser,
+  workItems: WorkItem[],
+  workerId: number
+): Promise<number> {
+  let workerAdded = 0;
+  
+  console.log(`\n🚀 [Worker ${workerId}] Starting with ${workItems.length} search tasks`);
+  
+  const context = await createBrowserContext(browser);
+  const page = await context.newPage();
+  page.setDefaultTimeout(30000);
+
+  try {
+    for (const { city, industry } of workItems) {
+      console.log(`\n📍 [Worker ${workerId}] ${city} - ${industry}:`);
+
+      const businesses = await scrapeGoogleMaps(page, industry, city, workerId);
+
+      for (const business of businesses) {
+        const saved = await saveLeadToDatabase(business, industry, city, workerId);
+        if (saved) {
+          totalAdded++;
+          workerAdded++;
+          console.log(`   [Worker ${workerId}] 💾 Saved (total: ${totalAdded})`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error(`[Worker ${workerId}] Fatal error:`, error);
+  } finally {
+    await context.close();
+  }
+
+  console.log(`\n✅ [Worker ${workerId}] Finished - added ${workerAdded} leads`);
+  return workerAdded;
+}
+
 async function main() {
-  console.log('🔍 TTWF Lead Generator - Real Business Scraper\n');
-  console.log('================================================\n');
+  console.log('🔍 TTWF Lead Generator - Real Business Scraper (Parallel Mode)\n');
+  console.log('================================================================\n');
+  console.log(`⚙️  Configuration:`);
+  console.log(`   - Parallel workers: ${PARALLEL_WORKERS}`);
+  console.log(`   - Max results per search: ${MAX_RESULTS_PER_SEARCH}\n`);
 
   let browser: Browser | null = null;
 
   try {
-    // Step 1: Clear existing data
-    await clearExistingLeads();
+    // Count existing leads
+    const existingCount = await prisma.lead.count();
+    console.log(`📊 Existing leads in database: ${existingCount}\n`);
 
-    // Step 2: Launch browser
+    // Step 1: Launch browser
     console.log('🌐 Launching browser...\n');
     browser = await chromium.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
 
-    const context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      locale: 'en-ZA',
-    });
-
-    const page = await context.newPage();
-    page.setDefaultTimeout(30000);
-
-    // Step 3: Scrape businesses
-    let totalAdded = 0;
-    const targetLeads = 120; // Aim for 120 to ensure at least 100
-
-    // Shuffle arrays for variety
-    const shuffledCities = SA_CITIES.sort(() => Math.random() - 0.5);
-    const shuffledIndustries = INDUSTRIES.sort(() => Math.random() - 0.5);
-
-    console.log('🔎 Starting search...\n');
+    // Step 2: Build work queue
+    const workQueue: WorkItem[] = [];
+    const shuffledCities = shuffleArray(SA_CITIES);
+    const shuffledIndustries = shuffleArray(INDUSTRIES);
 
     for (const city of shuffledCities) {
-      if (totalAdded >= targetLeads) break;
-
       for (const industry of shuffledIndustries) {
-        if (totalAdded >= targetLeads) break;
-
-        console.log(`\n📍 ${city} - ${industry}:`);
-
-        const businesses = await scrapeGoogleMaps(page, industry, city, 5);
-
-        for (const business of businesses) {
-          const saved = await saveLeadToDatabase(business, industry, city);
-          if (saved) {
-            totalAdded++;
-            console.log(`   💾 Saved (${totalAdded}/${targetLeads})`);
-          }
-        }
-
-        // Rate limiting between searches
-        await sleep(2000);
+        workQueue.push({ city, industry });
       }
     }
 
-    console.log(`\n================================================`);
-    console.log(`✅ Scraping complete! Added ${totalAdded} real leads.`);
-    console.log(`================================================\n`);
+    console.log(`📋 Total search combinations: ${workQueue.length}`);
+    console.log(`   Distributing across ${PARALLEL_WORKERS} workers...\n`);
+
+    // Step 3: Distribute work across workers
+    const workChunks = chunkArray(workQueue, PARALLEL_WORKERS);
+
+    // Step 4: Run workers in parallel
+    console.log('🔎 Starting parallel scraping...\n');
+    console.log('================================================================\n');
+
+    const startTime = Date.now();
+    
+    const results = await Promise.all(
+      workChunks.map((chunk, index) => 
+        workerTask(browser!, chunk, index + 1)
+      )
+    );
+
+    const endTime = Date.now();
+    const duration = Math.round((endTime - startTime) / 1000);
+
+    // Step 5: Report results
+    console.log(`\n================================================================`);
+    console.log(`✅ Scraping complete!`);
+    console.log(`================================================================`);
+    console.log(`   Total leads added: ${totalAdded}`);
+    console.log(`   By worker: ${results.map((r, i) => `Worker ${i + 1}: ${r}`).join(', ')}`);
+    console.log(`   Duration: ${duration} seconds`);
+    console.log(`   Final database count: ${await prisma.lead.count()}`);
+    console.log(`================================================================\n`);
 
   } catch (error) {
     console.error('Fatal error:', error);
