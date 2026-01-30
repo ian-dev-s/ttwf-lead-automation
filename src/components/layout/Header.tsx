@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { RefreshCw } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
@@ -24,6 +25,7 @@ export function Header({ title, description, actions }: HeaderProps) {
         </div>
         <div className="flex items-center gap-4">
           {actions}
+          <ThemeToggle />
           <Button
             variant="ghost"
             size="icon"
