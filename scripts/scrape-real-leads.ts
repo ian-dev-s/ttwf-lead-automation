@@ -258,11 +258,12 @@ async function extractBusinessDetails(
 
 async function scrapeGoogleMaps(
   page: Page,
+  browser: Browser,
   query: string,
   location: string,
   workerId: number
-): Promise<ScrapedBusiness[]> {
-  const results: ScrapedBusiness[] = [];
+): Promise<{ business: ScrapedBusiness; qualityScore?: number; qualityIssues?: string[] }[]> {
+  const results: { business: ScrapedBusiness; qualityScore?: number; qualityIssues?: string[] }[] = [];
   const searchQuery = `${query} ${location} South Africa`;
   const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(searchQuery)}`;
 
@@ -329,14 +330,20 @@ async function scrapeGoogleMaps(
         }
 
         // Check if this is a good prospect based on website quality
-        const prospectCheck = isGoodProspect(business.website);
+        const prospectCheck = await isGoodProspect(business.website, browser, workerId);
 
         // Include if: good prospect AND has decent rating (3.0+)
         if (prospectCheck.isGood && business.rating && business.rating >= 3.0) {
-          results.push(business);
-          console.log(`   [Worker ${workerId}] ✓ Found: ${business.name} (${business.rating}⭐, ${business.phones.length} phones) [${prospectCheck.reason}]`);
+          results.push({
+            business,
+            qualityScore: prospectCheck.qualityScore,
+            qualityIssues: prospectCheck.issues,
+          });
+          const scoreInfo = prospectCheck.qualityScore !== undefined ? ` (Quality: ${prospectCheck.qualityScore}/100)` : '';
+          console.log(`   [Worker ${workerId}] ✓ Found: ${business.name} (${business.rating}⭐, ${business.phones.length} phones) [${prospectCheck.reason}]${scoreInfo}`);
         } else if (!prospectCheck.isGood) {
-          console.log(`   [Worker ${workerId}] Skip: ${business.name} - ${prospectCheck.reason}`);
+          const scoreInfo = prospectCheck.qualityScore !== undefined ? ` (Quality: ${prospectCheck.qualityScore}/100)` : '';
+          console.log(`   [Worker ${workerId}] Skip: ${business.name} - ${prospectCheck.reason}${scoreInfo}`);
         } else {
           console.log(`   [Worker ${workerId}] Skip: ${business.name} - Low rating (${business.rating || 'N/A'})`);
         }
@@ -373,42 +380,234 @@ function isSocialOrDirectory(website: string): boolean {
   return socialPatterns.some(pattern => website.toLowerCase().includes(pattern));
 }
 
-// Check if website is likely a poor quality DIY/template site (still good prospects)
-function isPoorQualityWebsite(website: string): boolean {
-  const poorQualityPatterns = [
-    // Free website builders
-    'wix.com',
-    'wixsite.com',
-    'weebly.com',
-    'wordpress.com', // Note: wordpress.com (hosted) not .org
-    'squarespace.com',
-    'webnode.com',
-    'jimdo.com',
-    'site123.com',
-    'webs.com',
-    'yola.com',
-    'strikingly.com',
-    'carrd.co',
-    'webflow.io',
-    'netlify.app',
-    'vercel.app',
-    'herokuapp.com',
-    'blogspot.com',
-    'blogger.com',
-    'tumblr.com',
-    // South African free hosting
-    'co.za.com',
-    'za.com',
-    'mweb.co.za/sites',
-    // Generic indicators of basic sites
-    'sites.google.com',
-    'google.com/site',
+// Check if website URL indicates a DIY/template site
+function isDIYWebsiteUrl(website: string): boolean {
+  const diyPatterns = [
+    'wix.com', 'wixsite.com', 'weebly.com', 'wordpress.com',
+    'squarespace.com', 'webnode.com', 'jimdo.com', 'site123.com',
+    'webs.com', 'yola.com', 'strikingly.com', 'carrd.co',
+    'webflow.io', 'netlify.app', 'vercel.app', 'herokuapp.com',
+    'blogspot.com', 'blogger.com', 'tumblr.com',
+    'sites.google.com', 'google.com/site',
+    'co.za.com', 'mweb.co.za/sites',
   ];
-  return poorQualityPatterns.some(pattern => website.toLowerCase().includes(pattern));
+  return diyPatterns.some(pattern => website.toLowerCase().includes(pattern));
 }
 
+// Website quality analysis result
+interface WebsiteQualityResult {
+  score: number; // 0-100 (lower = worse quality = better prospect)
+  issues: string[];
+  loadTime: number;
+  hasSSL: boolean;
+  hasMobileViewport: boolean;
+  hasProperTitle: boolean;
+  hasDescription: boolean;
+  hasImages: boolean;
+  hasContactInfo: boolean;
+  isResponsive: boolean;
+  error?: string;
+}
+
+// Actually visit and analyze website quality
+async function analyzeWebsiteQuality(
+  browser: Browser,
+  websiteUrl: string,
+  workerId: number
+): Promise<WebsiteQualityResult> {
+  const result: WebsiteQualityResult = {
+    score: 50, // Default middle score
+    issues: [],
+    loadTime: 0,
+    hasSSL: false,
+    hasMobileViewport: false,
+    hasProperTitle: false,
+    hasDescription: false,
+    hasImages: false,
+    hasContactInfo: false,
+    isResponsive: false,
+  };
+
+  let context: BrowserContext | null = null;
+  
+  try {
+    // Ensure URL has protocol
+    let url = websiteUrl;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = 'https://' + url;
+    }
+
+    // Check SSL
+    result.hasSSL = url.startsWith('https://');
+    if (!result.hasSSL) {
+      result.issues.push('No SSL certificate (HTTP only)');
+    }
+
+    // Create a new context for website analysis
+    context = await browser.newContext({
+      viewport: { width: 1920, height: 1080 },
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    });
+    
+    const page = await context.newPage();
+    page.setDefaultTimeout(10000);
+
+    // Measure load time
+    const startTime = Date.now();
+    
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    } catch (e) {
+      result.error = 'Failed to load website';
+      result.issues.push('Website failed to load or timed out');
+      result.score = 20; // Poor score for non-loading sites
+      return result;
+    }
+    
+    result.loadTime = Date.now() - startTime;
+    
+    // Slow load time is a bad sign
+    if (result.loadTime > 5000) {
+      result.issues.push(`Slow load time (${(result.loadTime / 1000).toFixed(1)}s)`);
+    }
+
+    // Check for mobile viewport meta tag
+    const viewportMeta = await page.locator('meta[name="viewport"]').count();
+    result.hasMobileViewport = viewportMeta > 0;
+    if (!result.hasMobileViewport) {
+      result.issues.push('No mobile viewport meta tag');
+    }
+
+    // Check title
+    const title = await page.title();
+    result.hasProperTitle = title.length > 10 && title.length < 100;
+    if (!result.hasProperTitle) {
+      result.issues.push('Missing or poor page title');
+    }
+
+    // Check meta description
+    const description = await page.locator('meta[name="description"]').getAttribute('content').catch(() => null);
+    result.hasDescription = !!description && description.length > 20;
+    if (!result.hasDescription) {
+      result.issues.push('Missing meta description');
+    }
+
+    // Check for images
+    const imageCount = await page.locator('img').count();
+    result.hasImages = imageCount > 0;
+    if (imageCount === 0) {
+      result.issues.push('No images on the page');
+    }
+
+    // Check for contact information (phone, email patterns)
+    const pageContent = await page.content();
+    const hasPhone = /(\+27|0\d{2})[\s.-]?\d{3}[\s.-]?\d{4}/.test(pageContent);
+    const hasEmail = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(pageContent);
+    result.hasContactInfo = hasPhone || hasEmail;
+    if (!result.hasContactInfo) {
+      result.issues.push('No visible contact information');
+    }
+
+    // Check for modern CSS/responsiveness indicators
+    const hasModernCSS = await page.evaluate(() => {
+      const styles = Array.from(document.styleSheets).some(sheet => {
+        try {
+          const rules = Array.from(sheet.cssRules || []);
+          return rules.some(rule => 
+            rule.cssText?.includes('flex') || 
+            rule.cssText?.includes('grid') ||
+            rule.cssText?.includes('@media')
+          );
+        } catch { return false; }
+      });
+      
+      // Also check inline styles
+      const elements = document.querySelectorAll('[style]');
+      const hasInlineFlex = Array.from(elements).some(el => 
+        el.getAttribute('style')?.includes('flex') ||
+        el.getAttribute('style')?.includes('grid')
+      );
+      
+      return styles || hasInlineFlex;
+    });
+    
+    result.isResponsive = hasModernCSS && result.hasMobileViewport;
+    if (!result.isResponsive) {
+      result.issues.push('Website may not be responsive/mobile-friendly');
+    }
+
+    // Check for outdated indicators
+    const hasOutdatedIndicators = await page.evaluate(() => {
+      // Check for tables used for layout (old school)
+      const layoutTables = document.querySelectorAll('table[width], table[bgcolor]');
+      // Check for old HTML elements
+      const oldElements = document.querySelectorAll('font, center, marquee, blink');
+      // Check for Flash
+      const hasFlash = document.querySelectorAll('object[type*="flash"], embed[type*="flash"]').length > 0;
+      
+      return layoutTables.length > 2 || oldElements.length > 0 || hasFlash;
+    });
+    
+    if (hasOutdatedIndicators) {
+      result.issues.push('Website uses outdated HTML/design patterns');
+    }
+
+    // Check for broken images
+    const brokenImages = await page.evaluate(() => {
+      const images = document.querySelectorAll('img');
+      let broken = 0;
+      images.forEach(img => {
+        if (!img.complete || img.naturalWidth === 0) broken++;
+      });
+      return broken;
+    });
+    
+    if (brokenImages > 0) {
+      result.issues.push(`${brokenImages} broken image(s)`);
+    }
+
+    // Calculate final score based on issues
+    // Start at 100, deduct points for each issue
+    let score = 100;
+    
+    if (!result.hasSSL) score -= 15;
+    if (!result.hasMobileViewport) score -= 20;
+    if (!result.hasProperTitle) score -= 10;
+    if (!result.hasDescription) score -= 10;
+    if (!result.hasImages) score -= 5;
+    if (!result.hasContactInfo) score -= 10;
+    if (!result.isResponsive) score -= 15;
+    if (result.loadTime > 5000) score -= 10;
+    if (result.loadTime > 10000) score -= 10;
+    if (hasOutdatedIndicators) score -= 20;
+    if (brokenImages > 0) score -= 5 * Math.min(brokenImages, 3);
+
+    result.score = Math.max(0, Math.min(100, score));
+    
+    console.log(`   [Worker ${workerId}] 🔍 Website analysis: ${websiteUrl} - Score: ${result.score}/100, Issues: ${result.issues.length}`);
+
+  } catch (error: any) {
+    result.error = error?.message || 'Unknown error';
+    result.issues.push('Error analyzing website');
+    result.score = 25; // Give benefit of doubt - probably a bad site
+  } finally {
+    if (context) {
+      await context.close().catch(() => {});
+    }
+  }
+
+  return result;
+}
+
+// Quality threshold - websites scoring below this are good prospects
+const WEBSITE_QUALITY_THRESHOLD = 60;
+
 // Determine if this is a good prospect based on website quality
-function isGoodProspect(website: string | undefined): { isGood: boolean; reason: string } {
+async function isGoodProspect(
+  website: string | undefined,
+  browser: Browser | null,
+  workerId: number
+): Promise<{ isGood: boolean; reason: string; qualityScore?: number; issues?: string[] }> {
   // No website = perfect prospect
   if (!website) {
     return { isGood: true, reason: 'NO_WEBSITE' };
@@ -419,31 +618,58 @@ function isGoodProspect(website: string | undefined): { isGood: boolean; reason:
     return { isGood: true, reason: 'SOCIAL_OR_DIRECTORY' };
   }
   
-  // Poor quality DIY website = good prospect (they need a better one)
-  if (isPoorQualityWebsite(website)) {
-    return { isGood: true, reason: 'POOR_QUALITY_SITE' };
+  // DIY website URL patterns = good prospect
+  if (isDIYWebsiteUrl(website)) {
+    return { isGood: true, reason: 'DIY_WEBSITE_PLATFORM' };
   }
   
-  // Has a proper domain website = skip (they probably don't need our help)
-  return { isGood: false, reason: 'HAS_QUALITY_WEBSITE' };
+  // Has a proper domain - need to analyze the actual website quality
+  if (browser) {
+    const qualityResult = await analyzeWebsiteQuality(browser, website, workerId);
+    
+    // If website failed to load or has many issues, it's a good prospect
+    if (qualityResult.error || qualityResult.score < WEBSITE_QUALITY_THRESHOLD) {
+      return { 
+        isGood: true, 
+        reason: 'POOR_QUALITY_WEBSITE',
+        qualityScore: qualityResult.score,
+        issues: qualityResult.issues
+      };
+    }
+    
+    // Website is decent quality - skip this lead
+    return { 
+      isGood: false, 
+      reason: 'HAS_QUALITY_WEBSITE',
+      qualityScore: qualityResult.score
+    };
+  }
+  
+  // No browser available for analysis - assume it's a decent website
+  return { isGood: false, reason: 'HAS_WEBSITE_UNANALYZED' };
 }
 
-function calculateWebsiteScore(website: string | null | undefined): number {
+function calculateWebsiteScore(website: string | null | undefined, qualityScore?: number): number {
   if (!website) return 0; // No website = best prospect
   if (isSocialOrDirectory(website)) return 15; // Social only = great prospect
-  if (isPoorQualityWebsite(website)) return 30; // Poor website = good prospect
-  return 70; // Has proper website = lower priority
+  if (isDIYWebsiteUrl(website)) return 25; // DIY platform = great prospect
+  if (qualityScore !== undefined) {
+    // Invert the quality score - lower quality = better prospect score
+    return Math.round(qualityScore * 0.7); // Max 70 for analyzed sites
+  }
+  return 70; // Default for unanalyzed proper websites
 }
 
 async function saveLeadToDatabase(
   business: ScrapedBusiness, 
   industry: string, 
   location: string,
-  workerId: number
+  workerId: number,
+  qualityScore?: number,
+  qualityIssues?: string[]
 ): Promise<boolean> {
   try {
-    const websiteScore = calculateWebsiteScore(business.website);
-    const prospectCheck = isGoodProspect(business.website);
+    const websiteScore = calculateWebsiteScore(business.website, qualityScore);
     
     const leadScore = Math.round(
       (business.rating || 4) * 15 +
@@ -469,16 +695,26 @@ async function saveLeadToDatabase(
       return false;
     }
 
-    // Build notes based on prospect reason
-    const reasonNotes: Record<string, string> = {
-      'NO_WEBSITE': '🎯 NO WEBSITE - Perfect prospect!',
-      'SOCIAL_OR_DIRECTORY': '📱 Only has social media/directory listing - Great prospect!',
-      'POOR_QUALITY_SITE': '🔧 Has poor quality/DIY website - Good prospect for upgrade!',
-    };
+    // Determine prospect type for notes
+    let prospectNote = '';
+    if (!business.website) {
+      prospectNote = '🎯 NO WEBSITE - Perfect prospect!';
+    } else if (isSocialOrDirectory(business.website)) {
+      prospectNote = '📱 Only has social media/directory listing - Great prospect!';
+    } else if (isDIYWebsiteUrl(business.website)) {
+      prospectNote = '🔧 Has DIY website platform - Good prospect for upgrade!';
+    } else if (qualityScore !== undefined && qualityScore < WEBSITE_QUALITY_THRESHOLD) {
+      prospectNote = `⚠️ Website quality score: ${qualityScore}/100 - Needs improvement!`;
+      if (qualityIssues && qualityIssues.length > 0) {
+        prospectNote += ` Issues: ${qualityIssues.join(', ')}`;
+      }
+    } else {
+      prospectNote = `Website: ${business.website}`;
+    }
     
     const notes = [
       `Scraped from Google Maps.`,
-      reasonNotes[prospectCheck.reason] || `Website: ${business.website}`,
+      prospectNote,
       business.phones.length > 1 ? `📞 Additional phones: ${business.phones.slice(1).join(', ')}` : '',
     ].filter(Boolean).join(' ');
 
@@ -505,6 +741,10 @@ async function saveLeadToDatabase(
           phones: business.phones,
           emails: business.emails,
           category: business.category,
+          websiteAnalysis: qualityScore !== undefined ? {
+            score: qualityScore,
+            issues: qualityIssues || [],
+          } : undefined,
         },
       },
     });
@@ -572,11 +812,11 @@ async function workerTask(
 
       try {
         const activePage = await ensurePage();
-        const businesses = await scrapeGoogleMaps(activePage, industry, city, workerId);
+        const businessResults = await scrapeGoogleMaps(activePage, browser, industry, city, workerId);
         consecutiveErrors = 0; // Reset on success
 
-        for (const business of businesses) {
-          const saved = await saveLeadToDatabase(business, industry, city, workerId);
+        for (const { business, qualityScore, qualityIssues } of businessResults) {
+          const saved = await saveLeadToDatabase(business, industry, city, workerId, qualityScore, qualityIssues);
           if (saved) {
             totalAdded++;
             workerAdded++;
