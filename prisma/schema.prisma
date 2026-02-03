@@ -135,16 +135,20 @@ model Lead {
   phone          String?
   email          String?
   facebookUrl    String?    @map("facebook_url")
+  instagramUrl   String?    @map("instagram_url")
+  twitterUrl     String?    @map("twitter_url")
+  linkedinUrl    String?    @map("linkedin_url")
   googleMapsUrl  String?    @map("google_maps_url")
   website        String?
   websiteQuality Int?       @map("website_quality") // 0-100 score, null = no website
   googleRating   Float?     @map("google_rating")
   reviewCount    Int?       @map("review_count")
+  description    String?    @db.Text // Business description/services
   status         LeadStatus @default(NEW)
   source         String?    // e.g., "google_maps", "facebook", "manual"
   score          Int        @default(0) // Lead priority score
   notes          String?    @db.Text
-  metadata       Json?      // Additional flexible data
+  metadata       Json?      // Additional flexible data: { phones: [], emails: [], sources: {} }
   
   // Tracking
   createdAt      DateTime   @default(now()) @map("created_at")

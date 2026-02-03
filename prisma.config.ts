@@ -5,25 +5,21 @@ import { config } from 'dotenv'
 // Load .env file
 config()
 
+const databaseUrl = process.env.DATABASE_URL!
+
+// @ts-ignore - Prisma config types may not be up to date
 export default defineConfig({
-  earlyAccess: true,
   schema: path.join(__dirname, 'prisma', 'schema.prisma'),
 
+  datasource: {
+    url: databaseUrl,
+  },
+
   migrate: {
-    async url() {
-      return process.env.DATABASE_URL!
-    },
+    url: databaseUrl,
   },
 
   studio: {
-    async url() {
-      return process.env.DATABASE_URL!
-    },
-  },
-
-  db: {
-    async url() {
-      return process.env.DATABASE_URL!
-    },
+    url: databaseUrl,
   },
 })

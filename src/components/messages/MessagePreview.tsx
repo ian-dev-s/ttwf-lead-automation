@@ -36,9 +36,6 @@ import { useState } from 'react';
 
 interface MessageWithLead extends Message {
   lead: Lead;
-  generatedBy?: string | null;
-  aiProvider?: string | null;
-  aiModel?: string | null;
 }
 
 interface MessagePreviewProps {

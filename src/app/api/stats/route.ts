@@ -30,6 +30,7 @@ export async function GET(_request: NextRequest) {
       RESPONDED: 0,
       CONVERTED: 0,
       NOT_INTERESTED: 0,
+      REJECTED: 0,
       INVALID: 0,
     };
 

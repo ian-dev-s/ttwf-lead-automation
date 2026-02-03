@@ -1,6 +1,6 @@
 import { ScrapedBusiness, ScrapingParams } from '@/types';
 import { Browser, chromium, Page } from 'playwright';
-import { randomDelay, sleep } from '../utils';
+import { sleep } from '../utils';
 
 export interface GoogleMapsScraperConfig {
   headless?: boolean;
@@ -67,7 +67,8 @@ export class GoogleMapsScraper {
 
     try {
       console.log(`Navigating to: ${searchUrl}`);
-      await this.page.goto(searchUrl, { waitUntil: 'networkidle' });
+      // Use domcontentloaded instead of networkidle to avoid timeout
+      await this.page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
       // Wait for results to load
       await sleep(2000);
@@ -75,28 +76,30 @@ export class GoogleMapsScraper {
       // Accept cookies if prompted
       try {
         const acceptButton = this.page.locator('button:has-text("Accept all")');
-        if (await acceptButton.isVisible({ timeout: 3000 })) {
+        if (await acceptButton.isVisible({ timeout: 2000 })) {
           await acceptButton.click();
-          await sleep(1000);
+          await sleep(500);
         }
       } catch {
         // No cookie prompt, continue
       }
 
       // Wait for the results feed
-      await this.page.waitForSelector('[role="feed"]', { timeout: 10000 }).catch(() => {
-        console.log('Results feed not found, trying alternative selector');
-      });
+      const feedFound = await this.page.waitForSelector('[role="feed"]', { timeout: 10000 }).catch(() => null);
+      if (!feedFound) {
+        console.log('Results feed not found');
+        return results;
+      }
 
       // Scroll to load more results
       const maxScrolls = Math.ceil((params.maxResults || this.config.maxResults!) / 5);
       for (let i = 0; i < maxScrolls; i++) {
         await this.scrollResultsList();
-        await sleep(randomDelay(1000, 2000));
+        await sleep(500);
       }
 
-      // Extract business listings
-      const listings = await this.page.locator('[role="feed"] > div > div > a').all();
+      // Extract business listings - use the same selector as the working scraper
+      const listings = await this.page.locator('a[href*="/maps/place"]').all();
       console.log(`Found ${listings.length} listings`);
 
       for (const listing of listings.slice(0, params.maxResults || this.config.maxResults)) {
@@ -132,57 +135,165 @@ export class GoogleMapsScraper {
 
   private async extractBusinessDetails(listing: any): Promise<ScrapedBusiness | null> {
     try {
-      // Get the href which contains place info
-      const href = await listing.getAttribute('href');
-      if (!href) return null;
+      // First check if this is a sponsored listing by checking the aria-label
+      const ariaLabel = await listing.getAttribute('aria-label').catch(() => '');
+      if (ariaLabel?.toLowerCase().includes('sponsored')) {
+        console.log('   Skipping sponsored listing');
+        return null;
+      }
 
       // Click to open details
-      await listing.click();
-      await sleep(2000);
+      await listing.click().catch(() => {});
+      await sleep(2500);
 
       if (!this.page) return null;
 
-      // Extract details from the side panel
-      const name = await this.page
-        .locator('h1')
-        .first()
-        .textContent()
-        .catch(() => null);
+      // Wait for the URL to change to include /place/
+      let attempts = 0;
+      while (!this.page.url().includes('/place/') && attempts < 5) {
+        await sleep(500);
+        attempts++;
+      }
 
-      if (!name) return null;
+      // Multiple strategies to extract business name
+      let name: string | null = null;
 
-      const address = await this.page
+      // Strategy 1: Get the h1 with specific class (most reliable)
+      try {
+        const nameElement = await this.page.locator('h1.DUwDvf').first();
+        if (await nameElement.isVisible({ timeout: 2000 })) {
+          name = await nameElement.textContent();
+        }
+      } catch {}
+
+      // Strategy 2: fontHeadlineLarge class
+      if (!name || name === 'Results') {
+        try {
+          const nameElement = await this.page.locator('h1.fontHeadlineLarge').first();
+          if (await nameElement.isVisible({ timeout: 1000 })) {
+            name = await nameElement.textContent();
+          }
+        } catch {}
+      }
+
+      // Strategy 3: Get from aria-label of the clicked listing
+      if (!name || name === 'Results') {
+        if (ariaLabel && ariaLabel.length > 2 && ariaLabel.length < 100 && !ariaLabel.toLowerCase().includes('sponsored')) {
+          name = ariaLabel;
+        }
+      }
+
+      // Strategy 4: Look for h1 in the details panel that's not "Results"
+      if (!name || name === 'Results') {
+        const allH1s = await this.page.locator('h1').all();
+        for (const h1 of allH1s) {
+          const text = await h1.textContent().catch(() => null);
+          if (text && text !== 'Results' && text.length > 2 && text.length < 100 && 
+              !text.toLowerCase().includes('sponsored')) {
+            name = text;
+            break;
+          }
+        }
+      }
+
+      // Strategy 5: Extract from page title
+      if (!name || name === 'Results') {
+        const title = await this.page.title();
+        const titleMatch = title.match(/(.+?)\s*[-–]\s*Google Maps/);
+        if (titleMatch && titleMatch[1].length > 2) {
+          name = titleMatch[1].trim();
+        }
+      }
+
+      // If still no valid name, skip this listing
+      if (!name || name === 'Results' || name.toLowerCase().includes('sponsored')) {
+        console.log('   Could not extract valid business name');
+        return null;
+      }
+
+      // Clean the name
+      name = name.replace(/^Sponsored\s*/i, '').trim();
+      if (!name || name.length < 2) {
+        console.log('   Name too short after cleaning');
+        return null;
+      }
+
+      // Extract address with multiple selectors
+      let address = await this.page
         .locator('[data-item-id="address"] .fontBodyMedium')
         .textContent()
         .catch(() => null);
+      
+      if (!address) {
+        address = await this.page
+          .locator('button[data-item-id="address"]')
+          .textContent()
+          .catch(() => null);
+      }
 
-      const phone = await this.page
+      // Extract phone with multiple selectors
+      let phone = await this.page
         .locator('[data-item-id^="phone:"] .fontBodyMedium')
         .textContent()
         .catch(() => null);
+      
+      if (!phone) {
+        phone = await this.page
+          .locator('button[data-item-id^="phone"]')
+          .textContent()
+          .catch(() => null);
+      }
 
-      const website = await this.page
+      // Extract website
+      let website = await this.page
         .locator('[data-item-id="authority"] a')
         .getAttribute('href')
         .catch(() => null);
+      
+      if (!website) {
+        website = await this.page
+          .locator('a[data-item-id="authority"]')
+          .getAttribute('href')
+          .catch(() => null);
+      }
 
-      const ratingText = await this.page
-        .locator('[role="img"][aria-label*="stars"]')
-        .getAttribute('aria-label')
-        .catch(() => null);
-
+      // Extract rating from multiple possible locations
       let rating: number | undefined;
       let reviewCount: number | undefined;
 
+      // Try aria-label on star images
+      const ratingText = await this.page
+        .locator('[role="img"][aria-label*="star"]')
+        .first()
+        .getAttribute('aria-label')
+        .catch(() => null);
+
       if (ratingText) {
-        const ratingMatch = ratingText.match(/([\d.]+)\s*stars?/i);
+        const ratingMatch = ratingText.match(/([\d.]+)\s*star/i);
         if (ratingMatch) {
           rating = parseFloat(ratingMatch[1]);
         }
       }
 
+      // Try extracting from the rating span
+      if (!rating) {
+        const ratingSpan = await this.page
+          .locator('span[aria-hidden="true"]:has-text(".")')
+          .first()
+          .textContent()
+          .catch(() => null);
+        
+        if (ratingSpan) {
+          const match = ratingSpan.match(/^(\d+\.\d+)$/);
+          if (match) {
+            rating = parseFloat(match[1]);
+          }
+        }
+      }
+
+      // Extract review count
       const reviewText = await this.page
-        .locator('[aria-label*="reviews"]')
+        .locator('[aria-label*="review"]')
         .first()
         .textContent()
         .catch(() => null);
@@ -194,15 +305,33 @@ export class GoogleMapsScraper {
         }
       }
 
+      // If no review count from aria-label, try extracting from visible text
+      if (!reviewCount) {
+        const reviewSpan = await this.page
+          .locator('span:has-text("review")')
+          .first()
+          .textContent()
+          .catch(() => null);
+        
+        if (reviewSpan) {
+          const match = reviewSpan.match(/([\d,]+)\s*review/i);
+          if (match) {
+            reviewCount = parseInt(match[1].replace(/,/g, ''));
+          }
+        }
+      }
+
       const category = await this.page
         .locator('button[jsaction*="category"]')
         .textContent()
         .catch(() => null);
 
       // Extract place ID from URL
-      const currentUrl = this.page.url();
-      const placeIdMatch = currentUrl.match(/!1s([^!]+)/);
+      const finalUrl = this.page.url();
+      const placeIdMatch = finalUrl.match(/!1s([^!]+)/);
       const placeId = placeIdMatch ? placeIdMatch[1] : undefined;
+
+      console.log(`   Found: ${name.trim()} (${rating || 'N/A'}⭐, ${reviewCount || 0} reviews)`);
 
       return {
         name: name.trim(),
@@ -211,7 +340,7 @@ export class GoogleMapsScraper {
         website: website?.trim(),
         rating,
         reviewCount,
-        googleMapsUrl: currentUrl,
+        googleMapsUrl: finalUrl,
         category: category?.trim(),
         placeId,
       };
@@ -238,54 +367,28 @@ export class GoogleMapsScraper {
   }
 
   async checkWebsiteQuality(url: string): Promise<number> {
-    if (!this.page || !url) return 0;
-
-    try {
-      await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 });
-
-      // Simple quality scoring based on various factors
-      let score = 50; // Start with a base score
-
-      // Check if site loads
-      const title = await this.page.title().catch(() => '');
-      if (!title) score -= 20;
-
-      // Check for HTTPS
-      if (url.startsWith('https://')) score += 10;
-
-      // Check for mobile viewport meta
-      const hasMobileViewport = await this.page
-        .locator('meta[name="viewport"]')
-        .count()
-        .then((count) => count > 0)
-        .catch(() => false);
-      if (hasMobileViewport) score += 10;
-
-      // Check for modern design indicators
-      const hasModernCSS = await this.page
-        .evaluate(() => {
-          const styles = getComputedStyle(document.body);
-          return styles.display === 'flex' || styles.display === 'grid';
-        })
-        .catch(() => false);
-      if (hasModernCSS) score += 10;
-
-      // Check page load time (approximation)
-      const timing = await this.page
-        .evaluate(() => {
-          const perf = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
-          return perf?.loadEventEnd - perf?.startTime;
-        })
-        .catch(() => 5000);
-
-      if (timing < 2000) score += 10;
-      else if (timing > 5000) score -= 10;
-
-      return Math.max(0, Math.min(100, score));
-    } catch {
-      // If we can't load the site, it's low quality
-      return 10;
+    if (!url) return 0;
+    
+    // Quick check for social/directory sites - these are low quality for our purposes
+    const lowQualityPatterns = [
+      'facebook.com', 'instagram.com', 'twitter.com', 'linkedin.com',
+      'yellowpages', 'yelp.com', 'gumtree', 'olx.co.za',
+      'wix.com', 'weebly.com', 'squarespace.com', 'wordpress.com',
+      'sites.google.com', 'blogspot.com'
+    ];
+    
+    const urlLower = url.toLowerCase();
+    if (lowQualityPatterns.some(p => urlLower.includes(p))) {
+      return 20; // Low quality - good prospect
     }
+    
+    // For proper domains, assume medium quality
+    // Skip actual page loading to avoid timeouts
+    if (url.startsWith('https://')) {
+      return 50; // Medium quality
+    }
+    
+    return 40; // HTTP only - slightly lower quality
   }
 }
 

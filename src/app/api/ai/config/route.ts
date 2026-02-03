@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
     const config = await prisma.aIConfig.create({
       data: {
         name: validatedData.name,
-        provider: validatedData.provider as 'OPENROUTER',
+        provider: validatedData.provider as any,
         model: validatedData.model,
         temperature: validatedData.temperature ?? 0.7,
         maxTokens: validatedData.maxTokens ?? 1000,
@@ -133,7 +133,7 @@ export async function PATCH(request: NextRequest) {
 
     const config = await prisma.aIConfig.update({
       where: { id },
-      data: validatedData,
+      data: validatedData as any,
     });
 
     return NextResponse.json(config);

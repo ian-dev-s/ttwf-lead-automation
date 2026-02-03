@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
 import { formatDateTime } from '@/lib/utils';
-import { CheckCircle, Clock, Loader2, Play, Search, XCircle } from 'lucide-react';
+import { CheckCircle, Clock, Loader2, Play, Search, Sparkles, StopCircle, Trash2, XCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 interface ScrapingJob {
@@ -29,6 +29,9 @@ interface ScrapingJob {
   error: string | null;
 }
 
+// Preset options for number of leads
+const LEAD_COUNT_OPTIONS = [1, 5, 10, 20, 50];
+
 export default function ScraperPage() {
   const [jobs, setJobs] = useState<ScrapingJob[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
@@ -36,11 +39,12 @@ export default function ScraperPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Form state
-  const [leadsRequested, setLeadsRequested] = useState(10);
+  // Form state - default to 1 lead
+  const [leadsRequested, setLeadsRequested] = useState(1);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedCity, setSelectedCity] = useState<string>('all');
   const [minRating, setMinRating] = useState(4.0);
+  const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchJobs();
@@ -85,6 +89,25 @@ export default function ScraperPage() {
     }
   };
 
+  const handleStopAndDelete = async (jobId: string) => {
+    if (!confirm('Are you sure you want to stop and delete this job?')) return;
+    
+    setDeletingJobId(jobId);
+    try {
+      const response = await fetch(`/api/scraper/${jobId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) throw new Error('Failed to delete job');
+
+      await fetchJobs();
+    } catch (error) {
+      console.error('Error deleting job:', error);
+    } finally {
+      setDeletingJobId(null);
+    }
+  };
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'COMPLETED':
@@ -101,13 +124,15 @@ export default function ScraperPage() {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'COMPLETED':
-        return <Badge className="bg-green-100 text-green-800">Completed</Badge>;
+        return <Badge className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">Completed</Badge>;
       case 'RUNNING':
-        return <Badge className="bg-blue-100 text-blue-800">Running</Badge>;
+        return <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">Running</Badge>;
       case 'FAILED':
-        return <Badge className="bg-red-100 text-red-800">Failed</Badge>;
+        return <Badge className="bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">Failed</Badge>;
       case 'SCHEDULED':
-        return <Badge className="bg-yellow-100 text-yellow-800">Scheduled</Badge>;
+        return <Badge className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400">Scheduled</Badge>;
+      case 'CANCELLED':
+        return <Badge className="bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400">Cancelled</Badge>;
       default:
         return <Badge variant="secondary">{status}</Badge>;
     }
@@ -131,22 +156,44 @@ export default function ScraperPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
+            {/* Enrichment info banner */}
+            <div className="bg-gradient-to-r from-purple-500/10 to-blue-500/10 border border-purple-500/20 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <Sparkles className="h-5 w-5 text-purple-500 mt-0.5" />
+                <div>
+                  <h4 className="font-medium text-sm">Multi-Source Enrichment</h4>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Each lead is enriched from Google Maps, Google Search, website crawling, and Facebook 
+                    to gather all available contact info, social profiles, and business details.
+                  </p>
+                </div>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="space-y-2">
                 <Label>Number of Leads</Label>
-                <div className="flex items-center gap-4">
-                  <Slider
-                    value={[leadsRequested]}
-                    onValueChange={(v) => setLeadsRequested(v[0])}
-                    min={5}
-                    max={50}
-                    step={5}
-                    className="flex-1"
-                  />
-                  <span className="w-12 text-center font-medium">
-                    {leadsRequested}
-                  </span>
-                </div>
+                <Select 
+                  value={leadsRequested.toString()} 
+                  onValueChange={(v) => setLeadsRequested(parseInt(v))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LEAD_COUNT_OPTIONS.map((count) => (
+                      <SelectItem key={count} value={count.toString()}>
+                        {count} {count === 1 ? 'lead' : 'leads'}
+                        {count === 1 && ' (recommended)'}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {leadsRequested === 1 
+                    ? 'Full enrichment for one business' 
+                    : `Enrich ${leadsRequested} businesses sequentially`}
+                </p>
               </div>
 
               <div className="space-y-2">
@@ -256,10 +303,44 @@ export default function ScraperPage() {
                         </p>
                       </div>
                     </div>
-                    <div className="text-right text-sm text-muted-foreground">
-                      <p>{formatDateTime(job.scheduledFor)}</p>
-                      {job.error && (
-                        <p className="text-red-500 text-xs mt-1">{job.error}</p>
+                    <div className="flex items-center gap-4">
+                      <div className="text-right text-sm text-muted-foreground">
+                        <p>{formatDateTime(job.scheduledFor)}</p>
+                        {job.error && (
+                          <p className="text-red-500 text-xs mt-1">{job.error}</p>
+                        )}
+                      </div>
+                      {(job.status === 'RUNNING' || job.status === 'SCHEDULED') && (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => handleStopAndDelete(job.id)}
+                          disabled={deletingJobId === job.id}
+                        >
+                          {deletingJobId === job.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <>
+                              <StopCircle className="h-4 w-4 mr-1" />
+                              Stop & Delete
+                            </>
+                          )}
+                        </Button>
+                      )}
+                      {(job.status === 'COMPLETED' || job.status === 'FAILED' || job.status === 'CANCELLED') && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleStopAndDelete(job.id)}
+                          disabled={deletingJobId === job.id}
+                          className="text-muted-foreground hover:text-destructive"
+                        >
+                          {deletingJobId === job.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-4 w-4" />
+                          )}
+                        </Button>
                       )}
                     </div>
                   </div>

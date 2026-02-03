@@ -1,7 +1,16 @@
 import { AIProvider, LeadStatus, PrismaClient, UserRole } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { Pool } from 'pg';
 import bcrypt from 'bcryptjs';
+import { config } from 'dotenv';
 
-const prisma = new PrismaClient();
+config();
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
 
 // South African business leads data - Real business types in major cities
 const businessCategories = [

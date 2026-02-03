@@ -1,3 +1,4 @@
+import { ClearNewLeadsButton } from '@/components/leads/ClearNewLeadsButton';
 import { KanbanBoard } from '@/components/kanban/Board';
 import { Header } from '@/components/layout/Header';
 import { LeadForm } from '@/components/leads/LeadForm';
@@ -15,8 +16,17 @@ async function getLeads() {
   });
 }
 
+async function getNewLeadsCount() {
+  return prisma.lead.count({
+    where: { status: 'NEW' },
+  });
+}
+
 export default async function LeadsPage() {
-  const leads = await getLeads();
+  const [leads, newLeadsCount] = await Promise.all([
+    getLeads(),
+    getNewLeadsCount(),
+  ]);
 
   return (
     <div className="flex flex-col h-full">
@@ -25,6 +35,7 @@ export default async function LeadsPage() {
         description="Manage your business leads with drag-and-drop"
         actions={
           <div className="flex gap-2">
+            <ClearNewLeadsButton initialCount={newLeadsCount} />
             <Link href="/scraper">
               <Button variant="outline">
                 <Sparkles className="h-4 w-4 mr-2" />
