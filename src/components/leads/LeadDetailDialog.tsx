@@ -8,13 +8,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { ShareLeadDialog } from "@/components/leads/ShareLeadDialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
 import { Lead } from "@prisma/client"
-import { ExternalLink, Mail, MapPin, Phone, Star, XCircle } from "lucide-react"
+import { ExternalLink, Mail, MapPin, Phone, Send, Star, XCircle } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useState } from "react"
@@ -31,6 +32,7 @@ export function LeadDetailDialog({ lead, open, onOpenChange }: LeadDetailDialogP
   const [showRejectDialog, setShowRejectDialog] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [isRejecting, setIsRejecting] = useState(false)
+  const [showShareDialog, setShowShareDialog] = useState(false)
 
   if (!lead) return null
 
@@ -204,12 +206,28 @@ export function LeadDetailDialog({ lead, open, onOpenChange }: LeadDetailDialogP
                 Reject Lead
               </Button>
             )}
-            <Button asChild className={lead.status === 'NOT_INTERESTED' || lead.status === 'REJECTED' || lead.status === 'INVALID' ? '' : 'ml-auto'}>
-              <Link href={`/leads/${lead.id}`}>View Full Details</Link>
-            </Button>
+            <div className="flex gap-2 ml-auto">
+              <Button
+                variant="outline"
+                onClick={() => setShowShareDialog(true)}
+              >
+                <Send className="h-4 w-4 mr-2" />
+                Share
+              </Button>
+              <Button asChild>
+                <Link href={`/leads/${lead.id}`}>View Full Details</Link>
+              </Button>
+            </div>
           </div>
         </div>
       </DialogContent>
+
+      {/* Share Dialog */}
+      <ShareLeadDialog
+        lead={lead}
+        open={showShareDialog}
+        onOpenChange={setShowShareDialog}
+      />
 
       {/* Reject Lead Dialog */}
       <Dialog open={showRejectDialog} onOpenChange={setShowRejectDialog}>

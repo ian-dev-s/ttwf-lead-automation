@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import {
+    BookUser,
     ChevronDown,
     History,
     LayoutDashboard,
@@ -28,6 +29,7 @@ const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Leads', href: '/leads', icon: Users },
   { name: 'Messages', href: '/messages', icon: MessageSquare },
+  { name: 'Contacts', href: '/contacts', icon: BookUser },
   { name: 'Scraper', href: '/scraper', icon: Search },
   { name: 'History', href: '/history', icon: History },
   { name: 'Settings', href: '/settings', icon: Settings },

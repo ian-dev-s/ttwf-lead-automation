@@ -78,6 +78,7 @@ model User {
   statusChanges  StatusHistory[]
   sessions       Session[]
   accounts       Account[]
+  contacts       Contact[]
 
   @@map("users")
 }
@@ -306,6 +307,29 @@ model AnalyzedBusiness {
   @@index([isGoodProspect])
   @@index([analyzedAt])
   @@map("analyzed_businesses")
+}
+
+// Contact for address book - people to share leads with
+model Contact {
+  id          String   @id @default(cuid())
+  name        String
+  email       String?
+  phone       String?  // For WhatsApp
+  telegramId  String?  @map("telegram_id") // Telegram username or chat ID
+  notes       String?
+  isFavorite  Boolean  @default(false) @map("is_favorite")
+  
+  // Timestamps
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  createdById String?  @map("created_by_id")
+  createdBy   User?    @relation(fields: [createdById], references: [id])
+  
+  @@index([name])
+  @@index([isFavorite])
+  @@map("contacts")
 }
 
 // System settings for configurable parameters

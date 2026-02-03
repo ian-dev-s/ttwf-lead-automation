@@ -2,6 +2,7 @@
 
 import { ApprovalGate } from '@/components/messages/ApprovalGate';
 import { MessagePreview } from '@/components/messages/MessagePreview';
+import { ShareLeadDialog } from '@/components/leads/ShareLeadDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -38,6 +39,7 @@ import {
   MessageSquare,
   Phone,
   Save,
+  Send,
   Sparkles,
   Star,
   X,
@@ -66,6 +68,7 @@ export function LeadDetail({ lead }: LeadDetailProps) {
   const [rejectReason, setRejectReason] = useState('');
   const [isRejecting, setIsRejecting] = useState(false);
   const [isQualifying, setIsQualifying] = useState(false);
+  const [showShareDialog, setShowShareDialog] = useState(false);
   
   // Editing states
   const [isEditingPhone, setIsEditingPhone] = useState(false);
@@ -215,6 +218,13 @@ export function LeadDetail({ lead }: LeadDetailProps) {
 
   return (
     <div className="space-y-6">
+      {/* Share Dialog */}
+      <ShareLeadDialog
+        lead={lead}
+        open={showShareDialog}
+        onOpenChange={setShowShareDialog}
+      />
+
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
@@ -222,6 +232,13 @@ export function LeadDetail({ lead }: LeadDetailProps) {
           <p className="text-muted-foreground">{lead.industry || 'No industry specified'}</p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setShowShareDialog(true)}
+          >
+            <Send className="h-4 w-4 mr-2" />
+            Share Lead
+          </Button>
           <Badge className={leadStatusColors[lead.status]}>
             {leadStatusLabels[lead.status]}
           </Badge>
