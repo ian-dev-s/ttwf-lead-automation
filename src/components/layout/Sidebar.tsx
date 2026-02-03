@@ -12,6 +12,7 @@ import {
 import { cn } from '@/lib/utils';
 import {
     ChevronDown,
+    History,
     LayoutDashboard,
     LogOut,
     MessageSquare,
@@ -28,6 +29,7 @@ const navigation = [
   { name: 'Leads', href: '/leads', icon: Users },
   { name: 'Messages', href: '/messages', icon: MessageSquare },
   { name: 'Scraper', href: '/scraper', icon: Search },
+  { name: 'History', href: '/history', icon: History },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 

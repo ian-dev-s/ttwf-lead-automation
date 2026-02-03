@@ -269,6 +269,45 @@ model ScrapingJob {
   @@map("scraping_jobs")
 }
 
+// Analyzed Business History - tracks all businesses checked by the scraper
+// This prevents re-analyzing the same businesses and provides history
+model AnalyzedBusiness {
+  id              String   @id @default(cuid())
+  
+  // Business identification
+  businessName    String   @map("business_name")
+  location        String
+  googleMapsUrl   String?  @unique @map("google_maps_url")
+  
+  // Contact details found
+  phone           String?
+  website         String?
+  address         String?
+  
+  // Google Maps data
+  googleRating    Float?   @map("google_rating")
+  reviewCount     Int?     @map("review_count")
+  category        String?
+  
+  // Analysis results
+  websiteQuality  Int?     @map("website_quality") // 0-100 score
+  isGoodProspect  Boolean  @map("is_good_prospect")
+  skipReason      String?  @map("skip_reason") // Why it was skipped/accepted
+  
+  // Status tracking
+  wasConverted    Boolean  @default(false) @map("was_converted") // Did it become a Lead?
+  leadId          String?  @map("lead_id") // Reference to Lead if converted
+  
+  // Timestamps
+  analyzedAt      DateTime @default(now()) @map("analyzed_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  
+  @@index([businessName, location])
+  @@index([isGoodProspect])
+  @@index([analyzedAt])
+  @@map("analyzed_businesses")
+}
+
 // System settings for configurable parameters
 model SystemSettings {
   id                    String   @id @default("default")

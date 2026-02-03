@@ -12,10 +12,10 @@ export interface GoogleMapsScraperConfig {
 
 const DEFAULT_CONFIG: GoogleMapsScraperConfig = {
   headless: true,
-  slowMo: 100,
-  timeout: 30000,
+  slowMo: 50, // Reduced from 100
+  timeout: 20000, // Reduced from 30000
   maxResults: 20,
-  delayBetweenRequests: 2000,
+  delayBetweenRequests: 500, // Reduced from 2000
 };
 
 export class GoogleMapsScraper {
@@ -70,8 +70,8 @@ export class GoogleMapsScraper {
       // Use domcontentloaded instead of networkidle to avoid timeout
       await this.page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-      // Wait for results to load
-      await sleep(2000);
+      // Wait for results to load (reduced from 2000ms)
+      await sleep(1000);
 
       // Accept cookies if prompted
       try {
@@ -144,7 +144,7 @@ export class GoogleMapsScraper {
 
       // Click to open details
       await listing.click().catch(() => {});
-      await sleep(2500);
+      await sleep(1500); // Reduced from 2500ms
 
       if (!this.page) return null;
 

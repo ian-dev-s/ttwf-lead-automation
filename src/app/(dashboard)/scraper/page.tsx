@@ -1,6 +1,7 @@
 'use client';
 
 import { Header } from '@/components/layout/Header';
+import { JobLogViewer } from '@/components/scraper/JobLogViewer';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,7 +15,7 @@ import {
 } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
 import { formatDateTime } from '@/lib/utils';
-import { CheckCircle, Clock, Loader2, Play, Search, Sparkles, StopCircle, Trash2, XCircle } from 'lucide-react';
+import { Activity, CheckCircle, Clock, Loader2, Play, Search, Sparkles, StopCircle, Trash2, XCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 interface ScrapingJob {
@@ -46,6 +47,7 @@ export default function ScraperPage() {
   const [minRating, setMinRating] = useState(4.0);
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
   const [stoppingJobId, setStoppingJobId] = useState<string | null>(null);
+  const [viewingJobId, setViewingJobId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchJobs();
@@ -312,7 +314,16 @@ export default function ScraperPage() {
                 {jobs.map((job) => (
                   <div
                     key={job.id}
-                    className="flex items-center justify-between p-4 border rounded-lg"
+                    className={`flex items-center justify-between p-4 border rounded-lg transition-colors ${
+                      job.status === 'RUNNING' 
+                        ? 'cursor-pointer hover:bg-blue-500/5 hover:border-blue-500/30 border-blue-500/20' 
+                        : ''
+                    }`}
+                    onClick={() => {
+                      if (job.status === 'RUNNING') {
+                        setViewingJobId(job.id);
+                      }
+                    }}
                   >
                     <div className="flex items-center gap-4">
                       {getStatusIcon(job.status)}
@@ -334,7 +345,7 @@ export default function ScraperPage() {
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                       <div className="text-right text-sm text-muted-foreground mr-2">
                         <p>{formatDateTime(job.scheduledFor)}</p>
                         {job.error && (
@@ -343,6 +354,18 @@ export default function ScraperPage() {
                           </p>
                         )}
                       </div>
+                      {/* View Logs button - for running jobs */}
+                      {job.status === 'RUNNING' && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setViewingJobId(job.id)}
+                          className="border-blue-500/50 text-blue-600 hover:bg-blue-500/10 hover:text-blue-700"
+                        >
+                          <Activity className="h-4 w-4 mr-1" />
+                          View Live
+                        </Button>
+                      )}
                       {/* Stop button - only for running/scheduled jobs */}
                       {(job.status === 'RUNNING' || job.status === 'SCHEDULED') && (
                         <Button
@@ -389,6 +412,15 @@ export default function ScraperPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Job Log Viewer Modal */}
+      {viewingJobId && (
+        <JobLogViewer
+          jobId={viewingJobId}
+          isOpen={!!viewingJobId}
+          onClose={() => setViewingJobId(null)}
+        />
+      )}
     </div>
   );
 }

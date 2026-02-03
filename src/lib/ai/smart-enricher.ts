@@ -1,12 +1,18 @@
 /**
- * AI-Powered Smart Enricher
+ * AI-Powered Smart Enricher (OPTIMIZED)
  * 
  * Orchestrates all AI modules to provide intelligent lead enrichment:
- * 1. Scrapes data from multiple sources (Google Maps, website, Facebook, Google Search)
+ * 1. Scrapes data from multiple sources IN PARALLEL (Google Maps, website, Facebook, Google Search)
  * 2. Uses AI to extract structured data from unstructured text
  * 3. Cross-references and validates data from multiple sources
  * 4. Analyzes the business to understand what they do
  * 5. Qualifies the lead and provides personalization insights
+ * 
+ * OPTIMIZATIONS:
+ * - Parallel page scraping (website + Google Search + Facebook)
+ * - Parallel AI calls where possible
+ * - Reduced delays (500ms instead of 2s)
+ * - Reuses browser pages efficiently
  */
 
 import { Browser, Page } from 'playwright';
@@ -15,6 +21,9 @@ import { extractAndMergeData, ExtractedContactInfo, ExtractedBusinessInfo } from
 import { qualifyLeadWithAI, LeadQualification, LeadQualificationInput } from './lead-qualifier';
 import { crossReferenceWithAI, DataSource, ValidationResult } from './cross-reference';
 import { sleep } from '../utils';
+
+// Reduced delays for faster scraping
+const FAST_DELAY = 500; // 500ms instead of 2000ms
 
 export interface ScrapedBusinessInput {
   name: string;
@@ -84,6 +93,7 @@ export interface SmartEnrichedLead {
 
 /**
  * Smart enrich a lead using AI across multiple sources
+ * OPTIMIZED: Uses parallel scraping and parallel AI calls
  */
 export async function smartEnrichLead(
   browser: Browser,
@@ -92,7 +102,8 @@ export async function smartEnrichLead(
   industry: string,
   workerId: number = 1
 ): Promise<SmartEnrichedLead> {
-  console.log(`\n   [Worker ${workerId}] 🧠 Starting SMART AI enrichment for: ${business.name}`);
+  console.log(`\n   [Worker ${workerId}] 🧠 Starting FAST AI enrichment for: ${business.name}`);
+  const startTime = Date.now();
   
   const dataSources: DataSource[] = [];
   const textSources: { source: string; text: string }[] = [];
@@ -109,25 +120,34 @@ export async function smartEnrichLead(
     },
   });
   
-  const page = await browser.newPage();
   let facebookUrl: string | null = null;
   
+  // OPTIMIZATION: Create multiple pages for parallel scraping
+  const [websitePage, searchPage] = await Promise.all([
+    browser.newPage(),
+    browser.newPage(),
+  ]);
+  
   try {
-    // 2. Scrape website content if available
-    if (business.website) {
-      console.log(`   [Worker ${workerId}] 🌐 Analyzing website: ${business.website}`);
-      const websiteData = await scrapeWebsiteWithAI(page, business.website, business.name);
-      if (websiteData) {
-        dataSources.push(websiteData.dataSource);
-        if (websiteData.text) {
-          textSources.push({ source: 'website', text: websiteData.text });
-        }
+    // OPTIMIZATION: Scrape website AND Google Search IN PARALLEL
+    console.log(`   [Worker ${workerId}] ⚡ Parallel scraping: website + Google Search`);
+    
+    const [websiteData, searchData] = await Promise.all([
+      // Scrape website if available
+      business.website 
+        ? scrapeWebsiteWithAI(websitePage, business.website, business.name)
+        : Promise.resolve(null),
+      // Search Google for additional information
+      searchGoogleWithAI(searchPage, business.name, location),
+    ]);
+    
+    if (websiteData) {
+      dataSources.push(websiteData.dataSource);
+      if (websiteData.text) {
+        textSources.push({ source: 'website', text: websiteData.text });
       }
     }
     
-    // 3. Search Google for additional information
-    console.log(`   [Worker ${workerId}] 🔍 Searching Google for: "${business.name}" "${location}"`);
-    const searchData = await searchGoogleWithAI(page, business.name, location);
     if (searchData) {
       dataSources.push(searchData.dataSource);
       if (searchData.text) {
@@ -135,11 +155,11 @@ export async function smartEnrichLead(
       }
     }
     
-    // 4. Check Facebook if found in search results
+    // Check Facebook if found in search results (reuse searchPage)
     facebookUrl = findFacebookUrl(searchData?.text || '', business.name);
     if (facebookUrl) {
       console.log(`   [Worker ${workerId}] 📘 Found Facebook: ${facebookUrl}`);
-      const fbData = await scrapeFacebookWithAI(page, facebookUrl, business.name);
+      const fbData = await scrapeFacebookWithAI(searchPage, facebookUrl, business.name);
       if (fbData) {
         dataSources.push(fbData.dataSource);
         if (fbData.text) {
@@ -149,19 +169,21 @@ export async function smartEnrichLead(
     }
     
   } finally {
-    await page.close();
+    // Close pages in parallel
+    await Promise.all([
+      websitePage.close().catch(() => {}),
+      searchPage.close().catch(() => {}),
+    ]);
   }
   
-  // 5. Use AI to extract structured data from all text sources
-  console.log(`   [Worker ${workerId}] 🤖 AI extracting data from ${textSources.length} sources...`);
-  const extractedData = await extractAndMergeData(textSources, business.name);
+  // OPTIMIZATION: Run AI extraction and cross-reference IN PARALLEL
+  console.log(`   [Worker ${workerId}] ⚡ Parallel AI: extraction + cross-reference`);
+  const [extractedData, validation] = await Promise.all([
+    extractAndMergeData(textSources, business.name),
+    crossReferenceWithAI(dataSources, business.name),
+  ]);
   
-  // 6. Cross-reference and validate all data sources
-  console.log(`   [Worker ${workerId}] ✅ AI cross-referencing ${dataSources.length} sources...`);
-  const validation = await crossReferenceWithAI(dataSources, business.name);
-  
-  // 7. Analyze the business with AI
-  console.log(`   [Worker ${workerId}] 📊 AI analyzing business...`);
+  // Prepare business data for analysis
   const businessData: BusinessData = {
     name: business.name,
     website: business.website,
@@ -178,9 +200,11 @@ export async function smartEnrichLead(
     rawSearchResults: textSources.find(s => s.source === 'google_search')?.text,
   };
   
+  // OPTIMIZATION: Run business analysis (needed for qualification input)
+  console.log(`   [Worker ${workerId}] 📊 AI analyzing business...`);
   const analysis = await analyzeBusinessWithAI(businessData);
   
-  // 8. Qualify the lead with AI
+  // Now qualify the lead (depends on analysis)
   console.log(`   [Worker ${workerId}] 🎯 AI qualifying lead...`);
   const qualificationInput: LeadQualificationInput = {
     businessName: business.name,
@@ -201,7 +225,7 @@ export async function smartEnrichLead(
   
   const qualification = await qualifyLeadWithAI(qualificationInput);
   
-  // 9. Build the final enriched lead
+  // Build the final enriched lead
   const enrichedLead = buildEnrichedLead(
     business,
     location,
@@ -213,7 +237,8 @@ export async function smartEnrichLead(
     dataSources.map(s => s.source)
   );
   
-  console.log(`   [Worker ${workerId}] ✨ Enrichment complete for: ${business.name}`);
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`   [Worker ${workerId}] ✨ Enrichment complete in ${elapsed}s for: ${business.name}`);
   console.log(`   [Worker ${workerId}]    📈 Lead Score: ${enrichedLead.leadScore}/100 (Tier ${enrichedLead.qualificationTier})`);
   console.log(`   [Worker ${workerId}]    📞 Phones: ${enrichedLead.phones.length}, Emails: ${enrichedLead.emails.length}`);
   console.log(`   [Worker ${workerId}]    🎯 Recommended: ${enrichedLead.recommendedAction} via ${enrichedLead.recommendedChannel}`);
@@ -223,6 +248,7 @@ export async function smartEnrichLead(
 
 /**
  * Scrape website content for AI analysis
+ * OPTIMIZED: Reduced timeout and delay
  */
 async function scrapeWebsiteWithAI(
   page: Page,
@@ -230,8 +256,8 @@ async function scrapeWebsiteWithAI(
   businessName: string
 ): Promise<{ dataSource: DataSource; text: string } | null> {
   try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await sleep(1000);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    await sleep(FAST_DELAY);
     
     // Extract text content
     const text = await page.evaluate(() => {
@@ -308,6 +334,7 @@ async function scrapeWebsiteWithAI(
 
 /**
  * Search Google for business information
+ * OPTIMIZED: Reduced timeout and delay
  */
 async function searchGoogleWithAI(
   page: Page,
@@ -318,8 +345,8 @@ async function searchGoogleWithAI(
     const query = `"${businessName}" ${location} contact`;
     const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
     
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await sleep(1500);
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    await sleep(FAST_DELAY);
     
     // Extract search results text
     const text = await page.evaluate(() => {
@@ -374,6 +401,7 @@ async function searchGoogleWithAI(
 
 /**
  * Scrape Facebook page for business information
+ * OPTIMIZED: Reduced timeout and delay
  */
 async function scrapeFacebookWithAI(
   page: Page,
@@ -381,8 +409,8 @@ async function scrapeFacebookWithAI(
   businessName: string
 ): Promise<{ dataSource: DataSource; text: string } | null> {
   try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await sleep(2000);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    await sleep(FAST_DELAY);
     
     // Extract page content
     const data = await page.evaluate(() => {

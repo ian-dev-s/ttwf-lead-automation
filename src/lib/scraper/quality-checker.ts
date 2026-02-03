@@ -2,9 +2,13 @@
  * Quality Checker - Integrates original scraper's website quality analysis
  * 
  * Uses:
- * - Google PageSpeed Insights API for real quality analysis
+ * - Google PageSpeed Insights API for real quality analysis (with caching)
  * - DIY website pattern detection
  * - Social media/directory pattern detection
+ * 
+ * OPTIMIZATIONS:
+ * - In-memory cache for PageSpeed results (avoids duplicate API calls)
+ * - Reduced delays between API calls
  */
 
 import { sleep } from '../utils';
@@ -12,8 +16,16 @@ import { sleep } from '../utils';
 // PageSpeed API configuration
 const PAGESPEED_API_KEY = process.env.PAGESPEED_API_KEY || 'AIzaSyDdQdInPDoaUWtS0BmVIs-JY4zCmiEazOk';
 const PAGESPEED_MAX_RETRIES = 3;
-const PAGESPEED_INITIAL_BACKOFF_MS = 60000;
-const DELAY_BETWEEN_API_CALLS = 2000;
+const PAGESPEED_INITIAL_BACKOFF_MS = 30000; // Reduced from 60s to 30s
+const DELAY_BETWEEN_API_CALLS = 500; // Reduced from 2000ms to 500ms
+
+// OPTIMIZATION: Cache PageSpeed results to avoid duplicate API calls
+interface CachedResult {
+  result: WebsiteQualityResult;
+  timestamp: number;
+}
+const pageSpeedCache = new Map<string, CachedResult>();
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // Quality threshold - websites scoring below this are good prospects
 export const WEBSITE_QUALITY_THRESHOLD = 60;
@@ -124,11 +136,26 @@ export function calculateWebsiteScore(
 /**
  * Analyze website quality using Google PageSpeed Insights API
  * Includes retry logic with exponential backoff
+ * OPTIMIZED: Uses caching to avoid duplicate API calls
  */
 export async function analyzeWebsiteQuality(
   websiteUrl: string,
   workerId: number = 1
 ): Promise<WebsiteQualityResult> {
+  // Ensure URL has protocol
+  let url = websiteUrl;
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = 'https://' + url;
+  }
+  
+  // OPTIMIZATION: Check cache first
+  const cacheKey = url.toLowerCase().replace(/\/$/, ''); // Normalize URL
+  const cached = pageSpeedCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL_MS) {
+    console.log(`   [Worker ${workerId}] ⚡ PageSpeed cache hit for: ${url}`);
+    return cached.result;
+  }
+
   const result: WebsiteQualityResult = {
     score: 50,
     performance: 0,
@@ -137,12 +164,6 @@ export async function analyzeWebsiteQuality(
     seo: 0,
     issues: [],
   };
-
-  // Ensure URL has protocol
-  let url = websiteUrl;
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    url = 'https://' + url;
-  }
 
   // Google PageSpeed Insights API with API key
   const apiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&key=${PAGESPEED_API_KEY}&category=performance&category=accessibility&category=best-practices&category=seo&strategy=mobile`;
@@ -224,6 +245,9 @@ export async function analyzeWebsiteQuality(
       }
       
       console.log(`   [Worker ${workerId}] ✅ PageSpeed: Overall=${result.score} | Perf=${result.performance} | A11y=${result.accessibility} | BP=${result.bestPractices} | SEO=${result.seo}`);
+      
+      // OPTIMIZATION: Cache the result
+      pageSpeedCache.set(cacheKey, { result, timestamp: Date.now() });
       
       return result; // Success!
       

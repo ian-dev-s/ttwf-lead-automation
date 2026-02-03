@@ -6,7 +6,123 @@ import { SA_CITIES, TARGET_CATEGORIES } from '../constants';
 import { prisma } from '../db';
 import { sleep } from '../utils';
 import { createGoogleMapsScraper } from './google-maps';
+import { clearJobLogs, initJobLogs, jobLog } from './job-logger';
 import { checkIfGoodProspect, quickQualityCheck } from './quality-checker';
+
+// ============================================================================
+// ANALYZED BUSINESS HISTORY - Check and save to avoid re-analyzing
+// ============================================================================
+
+interface AnalyzedBusinessCheck {
+  wasAnalyzedBefore: boolean;
+  isGoodProspect?: boolean;
+  skipReason?: string;
+  analyzedAt?: Date;
+}
+
+/**
+ * Check if a business has been analyzed before
+ */
+async function checkAnalyzedHistory(
+  googleMapsUrl: string | undefined,
+  businessName: string,
+  location: string
+): Promise<AnalyzedBusinessCheck> {
+  try {
+    // First try to find by Google Maps URL (most reliable)
+    if (googleMapsUrl) {
+      const byUrl = await prisma.analyzedBusiness.findUnique({
+        where: { googleMapsUrl },
+      });
+      if (byUrl) {
+        return {
+          wasAnalyzedBefore: true,
+          isGoodProspect: byUrl.isGoodProspect,
+          skipReason: byUrl.skipReason || undefined,
+          analyzedAt: byUrl.analyzedAt,
+        };
+      }
+    }
+    
+    // Fallback: try to find by name + location
+    const byNameLocation = await prisma.analyzedBusiness.findFirst({
+      where: {
+        businessName: businessName,
+        location: location,
+      },
+    });
+    
+    if (byNameLocation) {
+      return {
+        wasAnalyzedBefore: true,
+        isGoodProspect: byNameLocation.isGoodProspect,
+        skipReason: byNameLocation.skipReason || undefined,
+        analyzedAt: byNameLocation.analyzedAt,
+      };
+    }
+    
+    return { wasAnalyzedBefore: false };
+  } catch (error) {
+    console.error('Error checking analyzed history:', error);
+    return { wasAnalyzedBefore: false };
+  }
+}
+
+/**
+ * Save a business to the analyzed history
+ */
+async function saveToAnalyzedHistory(
+  business: {
+    name: string;
+    googleMapsUrl?: string;
+    address?: string;
+    phone?: string;
+    website?: string;
+    rating?: number;
+    reviewCount?: number;
+    category?: string;
+  },
+  location: string,
+  isGoodProspect: boolean,
+  skipReason: string,
+  websiteQuality?: number,
+  leadId?: string
+): Promise<void> {
+  try {
+    // Use upsert to handle potential duplicates
+    await prisma.analyzedBusiness.upsert({
+      where: {
+        googleMapsUrl: business.googleMapsUrl || `manual_${business.name}_${location}`,
+      },
+      create: {
+        businessName: business.name,
+        location,
+        googleMapsUrl: business.googleMapsUrl,
+        phone: business.phone,
+        website: business.website,
+        address: business.address,
+        googleRating: business.rating,
+        reviewCount: business.reviewCount,
+        category: business.category,
+        websiteQuality,
+        isGoodProspect,
+        skipReason,
+        wasConverted: !!leadId,
+        leadId,
+      },
+      update: {
+        websiteQuality,
+        isGoodProspect,
+        skipReason,
+        wasConverted: !!leadId,
+        leadId,
+        updatedAt: new Date(),
+      },
+    });
+  } catch (error) {
+    console.error('Error saving to analyzed history:', error);
+  }
+}
 
 // Re-export constants for convenience
 export { SA_CITIES, TARGET_CATEGORIES };
@@ -288,9 +404,10 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     },
   });
 
+  // OPTIMIZED: Reduced delays for faster scraping
   const scraper = createGoogleMapsScraper({
     headless: true,
-    delayBetweenRequests: parseInt(process.env.SCRAPE_DELAY_MS || '2000'),
+    delayBetweenRequests: parseInt(process.env.SCRAPE_DELAY_MS || '500'),
     maxResults: job.leadsRequested,
   });
 
@@ -299,15 +416,23 @@ export async function runScrapingJob(jobId: string): Promise<void> {
 
   // Register this job as running (for cancellation/completion support)
   runningJobs.set(jobId, { cancelled: false, completed: false, scraper, browser: null });
+  
+  // Initialize job logging
+  initJobLogs(jobId);
+  clearJobLogs(jobId);
 
   try {
+    jobLog.info(jobId, 'Initializing scraper...');
     await scraper.initialize();
     
     // Check for cancellation before starting browser
     if (shouldJobStop(jobId)) {
       console.log(`🛑 Job ${jobId} stopped before browser init`);
+      jobLog.warning(jobId, 'Job stopped before browser initialization');
       return;
     }
+    
+    jobLog.info(jobId, 'Launching browser for AI enrichment...');
     
     // Create a separate browser for AI enrichment
     browser = await chromium.launch({
@@ -331,6 +456,15 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     console.log(`   Target: ${job.leadsRequested} lead(s)`);
     console.log(`   Categories: ${categories.slice(0, 3).join(', ')}${categories.length > 3 ? '...' : ''}`);
     console.log(`   Locations: ${locations.slice(0, 3).join(', ')}${locations.length > 3 ? '...' : ''}\n`);
+    
+    jobLog.success(jobId, `🚀 Starting AI-Powered Scraping Job`, {
+      target: job.leadsRequested,
+      categories: categories.length,
+      locations: locations.length,
+      minRating,
+    });
+    jobLog.info(jobId, `🧠 AI Modules: Business Analysis, Data Extraction, Lead Qualification`);
+    jobLog.info(jobId, `📊 Target: ${job.leadsRequested} lead(s)`);
 
     // Iterate through categories and locations
     categoryLoop:
@@ -338,6 +472,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
       // Check if we should stop (cancelled OR target reached)
       if (shouldJobStop(jobId)) {
         console.log(`🛑 Job ${jobId} stopping at category loop`);
+        jobLog.warning(jobId, 'Stopping job (cancelled or target reached)');
         break categoryLoop;
       }
 
@@ -345,11 +480,13 @@ export async function runScrapingJob(jobId: string): Promise<void> {
         // Check if we should stop (cancelled OR target reached)
         if (shouldJobStop(jobId)) {
           console.log(`🛑 Job ${jobId} stopping at location loop`);
+          jobLog.warning(jobId, 'Stopping job (cancelled or target reached)');
           break categoryLoop;
         }
 
         try {
           console.log(`\n📍 Searching: ${category} in ${location}`);
+          jobLog.progress(jobId, `📍 Searching: ${category} in ${location}`);
           
           const businesses = await scraper.searchBusinesses({
             query: category,
@@ -358,15 +495,51 @@ export async function runScrapingJob(jobId: string): Promise<void> {
             // Only get what we need - 1 at a time for thorough AI enrichment
             maxResults: Math.min(3, job.leadsRequested - leadsFound),
           });
+          
+          jobLog.info(jobId, `Found ${businesses.length} potential businesses`);
 
           for (const business of businesses) {
             // Check if we should stop (cancelled OR target reached)
             if (shouldJobStop(jobId)) {
               console.log(`🛑 Job ${jobId} stopping at business loop`);
+              jobLog.warning(jobId, 'Stopping job (cancelled or target reached)');
               break categoryLoop;
             }
 
-            // Check if this business already exists
+            jobLog.info(jobId, `Checking: ${business.name} (${business.rating}⭐)`);
+
+            // OPTIMIZATION: Check analyzed history first (avoids re-analyzing)
+            const historyCheck = await checkAnalyzedHistory(
+              business.googleMapsUrl,
+              business.name,
+              location
+            );
+            
+            if (historyCheck.wasAnalyzedBefore) {
+              if (!historyCheck.isGoodProspect) {
+                console.log(`   ⏭️  Skipping (history): ${business.name} - ${historyCheck.skipReason}`);
+                jobLog.info(jobId, `⏭️ Skipping (from history): ${business.name} - ${historyCheck.skipReason}`);
+                continue;
+              }
+              // Was a good prospect before - check if already converted to lead
+              const existingLead = await prisma.lead.findFirst({
+                where: {
+                  OR: [
+                    { googleMapsUrl: business.googleMapsUrl },
+                    { businessName: business.name, location: location },
+                  ],
+                },
+              });
+              if (existingLead) {
+                console.log(`   ⏭️  Skipping (history): ${business.name} - Already a lead`);
+                jobLog.info(jobId, `⏭️ Skipping (from history): ${business.name} - Already a lead`);
+                continue;
+              }
+              // Good prospect not yet converted - continue to enrich
+              jobLog.info(jobId, `✅ Previously analyzed as good prospect: ${business.name}`);
+            }
+
+            // Check if this business already exists as a lead
             const existingLead = await prisma.lead.findFirst({
               where: {
                 OR: [
@@ -381,6 +554,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
 
             if (existingLead) {
               console.log(`   ⏭️  Skipping existing: ${business.name}`);
+              jobLog.info(jobId, `⏭️ Skipping (already exists): ${business.name}`);
               continue;
             }
 
@@ -390,24 +564,43 @@ export async function runScrapingJob(jobId: string): Promise<void> {
             
             let websiteQualityScore: number | undefined;
             let isGoodProspect = quickCheck.isLikelyGoodProspect;
+            let skipReason = '';
             
             if (!quickCheck.isLikelyGoodProspect && business.website) {
               // Step 2: Has proper domain - do full PageSpeed API analysis
               console.log(`   🔍 Checking website quality for: ${business.name}`);
+              jobLog.progress(jobId, `🔍 Analyzing website quality: ${business.website}`);
               const prospectCheck = await checkIfGoodProspect(business.website, 1);
               isGoodProspect = prospectCheck.isGoodProspect;
               websiteQualityScore = prospectCheck.qualityScore;
               
               if (!isGoodProspect) {
-                console.log(`   ⏭️  Skipping ${business.name} - has quality website (${websiteQualityScore}/100)`);
+                skipReason = `Has quality website (${websiteQualityScore}/100)`;
+                console.log(`   ⏭️  Skipping ${business.name} - ${skipReason}`);
+                jobLog.info(jobId, `⏭️ Skipping ${business.name} - ${skipReason}`);
+                
+                // Save to history so we don't re-analyze next time
+                await saveToAnalyzedHistory(
+                  business,
+                  location,
+                  false,
+                  skipReason,
+                  websiteQualityScore
+                );
+                
                 continue;
               }
+              skipReason = `Website needs improvement (${websiteQualityScore}/100)`;
+              jobLog.success(jobId, `✅ ${skipReason} - Good prospect!`);
             } else {
               websiteQualityScore = quickCheck.estimatedScore;
+              skipReason = quickCheck.reason;
               console.log(`   ✅ ${business.name} - ${quickCheck.reason} (score: ${quickCheck.estimatedScore})`);
+              jobLog.success(jobId, `✅ ${business.name} - ${quickCheck.reason} (score: ${quickCheck.estimatedScore})`);
             }
 
             console.log(`\n   🧠 AI Enrichment starting for: ${business.name}`);
+            jobLog.progress(jobId, `🧠 Starting AI Enrichment for: ${business.name}`);
 
             try {
               // Use AI-powered smart enrichment
@@ -436,18 +629,51 @@ export async function runScrapingJob(jobId: string): Promise<void> {
               // Check if lead is qualified
               if (!enrichedLead.isQualified && enrichedLead.qualificationTier === 'D') {
                 console.log(`   ⏭️  AI determined ${business.name} is not a good prospect (Tier D)`);
+                jobLog.info(jobId, `⏭️ AI determined ${business.name} is not a good prospect (Tier D)`);
+                
+                // Save to history as not good prospect
+                await saveToAnalyzedHistory(
+                  business,
+                  location,
+                  false,
+                  `AI disqualified (Tier D, Score: ${enrichedLead.leadScore})`,
+                  websiteQualityScore
+                );
+                
                 continue;
               }
 
+              jobLog.progress(jobId, `💾 Saving lead: ${business.name}`);
+              
               // Save the AI-enriched lead
               const saved = await saveSmartEnrichedLead(enrichedLead);
 
               if (saved) {
+                // Save to history as converted lead
+                await saveToAnalyzedHistory(
+                  business,
+                  location,
+                  true,
+                  `Converted to lead (Tier ${enrichedLead.qualificationTier}, Score: ${enrichedLead.leadScore})`,
+                  websiteQualityScore,
+                  enrichedLead.googleMapsUrl // This will be used as reference
+                );
                 leadsFound++;
                 console.log(`   ✅ Saved AI-enriched lead: ${business.name}`);
                 console.log(`      📊 Score: ${enrichedLead.leadScore}/100 | Tier: ${enrichedLead.qualificationTier}`);
                 console.log(`      📞 Contacts: ${enrichedLead.phones.length} phones, ${enrichedLead.emails.length} emails`);
                 console.log(`      🎯 Action: ${enrichedLead.recommendedAction} via ${enrichedLead.recommendedChannel}`);
+                
+                jobLog.success(jobId, `🎉 LEAD SAVED: ${business.name}`, {
+                  score: enrichedLead.leadScore,
+                  tier: enrichedLead.qualificationTier,
+                  phones: enrichedLead.phones.length,
+                  emails: enrichedLead.emails.length,
+                });
+                jobLog.info(jobId, `📊 Score: ${enrichedLead.leadScore}/100 | Tier: ${enrichedLead.qualificationTier}`);
+                jobLog.info(jobId, `📞 Contacts: ${enrichedLead.phones.length} phones, ${enrichedLead.emails.length} emails`);
+                jobLog.info(jobId, `🎯 Recommended: ${enrichedLead.recommendedAction} via ${enrichedLead.recommendedChannel}`);
+                jobLog.progress(jobId, `📈 Progress: ${leadsFound}/${job.leadsRequested} leads found`);
 
                 // Update job progress
                 await prisma.scrapingJob.update({
@@ -458,20 +684,23 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                 // If we've reached our target, STOP IMMEDIATELY
                 if (leadsFound >= job.leadsRequested) {
                   console.log(`\n🎯 TARGET REACHED (${leadsFound}/${job.leadsRequested})! STOPPING ALL OPERATIONS.`);
+                  jobLog.success(jobId, `🎯 TARGET REACHED! Found ${leadsFound}/${job.leadsRequested} leads. Stopping.`);
                   markJobCompleted(jobId); // Mark as completed to stop all loops
                   break categoryLoop; // Break out of ALL loops immediately
                 }
               }
             } catch (enrichError) {
               console.error(`   ⚠️  AI enrichment failed for ${business.name}:`, enrichError);
+              jobLog.error(jobId, `⚠️ AI enrichment failed for ${business.name}: ${enrichError instanceof Error ? enrichError.message : 'Unknown error'}`);
               // Continue to next business
             }
 
-            // Delay between leads to respect API rate limits
-            await sleep(3000);
+            // OPTIMIZED: Reduced delay between leads (was 3000ms)
+            await sleep(1000);
           }
         } catch (error) {
           console.error(`   ❌ Error searching ${category} in ${location}:`, error);
+          jobLog.error(jobId, `❌ Error searching ${category} in ${location}: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
       }
     }
@@ -488,14 +717,17 @@ export async function runScrapingJob(jobId: string): Promise<void> {
       });
 
       console.log(`\n✅ AI-Powered Job completed! Found ${leadsFound}/${job.leadsRequested} qualified lead(s)`);
+      jobLog.success(jobId, `✅ Job completed! Found ${leadsFound}/${job.leadsRequested} qualified lead(s)`);
     } else {
       console.log(`\n🛑 Job ${jobId} was CANCELLED by user. Found ${leadsFound} leads before cancellation.`);
+      jobLog.warning(jobId, `🛑 Job was CANCELLED by user. Found ${leadsFound} leads before cancellation.`);
     }
 
   } catch (error) {
     // Don't update status if job was cancelled (already handled)
     if (!isJobCancelled(jobId)) {
       console.error(`Job ${jobId} failed:`, error);
+      jobLog.error(jobId, `❌ Job failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       await prisma.scrapingJob.update({
         where: { id: jobId },
         data: {
@@ -507,6 +739,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     }
   } finally {
     // Clean up resources
+    jobLog.info(jobId, '🧹 Cleaning up resources...');
     try {
       await scraper.close();
     } catch (e) {
@@ -523,6 +756,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     // Remove from running jobs registry
     runningJobs.delete(jobId);
     console.log(`🏁 Job ${jobId} cleanup complete`);
+    jobLog.info(jobId, '🏁 Job cleanup complete');
   }
 }
 
