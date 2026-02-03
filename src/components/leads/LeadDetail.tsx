@@ -6,42 +6,42 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import {
-    formatDateTime,
-    formatPhoneNumber,
-    getWhatsAppUrl,
-    leadStatusColors,
-    leadStatusLabels,
+  formatDateTime,
+  formatPhoneNumber,
+  getWhatsAppUrl,
+  leadStatusColors,
+  leadStatusLabels,
 } from '@/lib/utils';
 import { Lead, Message, MessageType, StatusHistory } from '@prisma/client';
 import {
-    CheckCircle,
-    Edit2,
-    ExternalLink,
-    Facebook,
-    Globe,
-    History,
-    Loader2,
-    Mail,
-    MapPin,
-    MessageSquare,
-    Phone,
-    Save,
-    Sparkles,
-    Star,
-    X,
-    XCircle,
+  CheckCircle,
+  Edit2,
+  ExternalLink,
+  Facebook,
+  Globe,
+  History,
+  Loader2,
+  Mail,
+  MapPin,
+  MessageSquare,
+  Phone,
+  Save,
+  Sparkles,
+  Star,
+  X,
+  XCircle,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
@@ -83,11 +83,13 @@ export function LeadDetail({ lead }: LeadDetailProps) {
   const handleSaveField = async (field: 'phone' | 'email' | 'website' | 'notes', value: string) => {
     setIsSaving(true);
     try {
+      // Send empty string to clear the field, or the actual value
+      // The API will convert empty strings to null for fields that need it
       const response = await fetch(`/api/leads/${lead.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          [field]: value || null,
+          [field]: value,
         }),
       });
 

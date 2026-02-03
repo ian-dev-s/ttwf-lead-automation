@@ -4,7 +4,7 @@
 
 // Scraping configuration
 export const PARALLEL_WORKERS = 1; // Single worker to avoid rate limits
-export const MAX_RESULTS_PER_SEARCH = 10; // Limit per search
+export const MAX_RESULTS_PER_SEARCH = 1; // Limit per search
 export const DELAY_BETWEEN_LISTINGS = 1000; // ms between clicking listings
 export const DELAY_BETWEEN_SEARCHES = 2000; // ms between searches
 export const TARGET_LEADS = 50; // Stop after this many leads are added

@@ -101,35 +101,54 @@ export async function PATCH(
       return NextResponse.json({ error: 'Lead not found' }, { status: 404 });
     }
 
-    // Prepare update data
-    const updateData: any = {
-      ...validatedData,
-      email: validatedData.email || null,
-      facebookUrl: validatedData.facebookUrl || null,
-      googleMapsUrl: validatedData.googleMapsUrl || null,
-      website: validatedData.website || null,
-    };
+    // Prepare update data - only include fields that were explicitly provided
+    const updateData: any = { ...validatedData };
+    
+    // Only set these fields to null if they were explicitly provided as empty strings
+    // (not if they were simply not included in the request)
+    if ('email' in body) {
+      updateData.email = validatedData.email || null;
+    }
+    if ('facebookUrl' in body) {
+      updateData.facebookUrl = validatedData.facebookUrl || null;
+    }
+    if ('googleMapsUrl' in body) {
+      updateData.googleMapsUrl = validatedData.googleMapsUrl || null;
+    }
+    if ('website' in body) {
+      updateData.website = validatedData.website || null;
+    }
+    if ('phone' in body) {
+      updateData.phone = validatedData.phone || null;
+    }
 
     // Recalculate score if relevant fields changed
     if (
-      validatedData.website !== undefined ||
-      validatedData.websiteQuality !== undefined ||
-      validatedData.googleRating !== undefined ||
-      validatedData.reviewCount !== undefined ||
-      validatedData.phone !== undefined ||
-      validatedData.email !== undefined ||
-      validatedData.facebookUrl !== undefined
+      'website' in body ||
+      'websiteQuality' in body ||
+      'googleRating' in body ||
+      'reviewCount' in body ||
+      'phone' in body ||
+      'email' in body ||
+      'facebookUrl' in body
     ) {
+      // Use the new value if provided, otherwise fall back to current lead value
+      const newWebsite = 'website' in body ? updateData.website : currentLead.website;
+      const newWebsiteQuality = 'websiteQuality' in body ? updateData.websiteQuality : currentLead.websiteQuality;
+      const newPhone = 'phone' in body ? updateData.phone : currentLead.phone;
+      const newEmail = 'email' in body ? updateData.email : currentLead.email;
+      const newFacebookUrl = 'facebookUrl' in body ? updateData.facebookUrl : currentLead.facebookUrl;
+      const newGoogleRating = 'googleRating' in body ? updateData.googleRating : currentLead.googleRating;
+      const newReviewCount = 'reviewCount' in body ? updateData.reviewCount : currentLead.reviewCount;
+
       updateData.score = calculateLeadScore({
-        hasNoWebsite: !updateData.website && !currentLead.website,
-        hasLowQualityWebsite:
-          (updateData.website || currentLead.website) &&
-          (updateData.websiteQuality || currentLead.websiteQuality || 0) < 50,
-        googleRating: updateData.googleRating ?? currentLead.googleRating,
-        reviewCount: updateData.reviewCount ?? currentLead.reviewCount,
-        hasFacebook: !!(updateData.facebookUrl || currentLead.facebookUrl),
-        hasPhone: !!(updateData.phone || currentLead.phone),
-        hasEmail: !!(updateData.email || currentLead.email),
+        hasNoWebsite: !newWebsite,
+        hasLowQualityWebsite: !!newWebsite && (newWebsiteQuality || 0) < 50,
+        googleRating: newGoogleRating,
+        reviewCount: newReviewCount,
+        hasFacebook: !!newFacebookUrl,
+        hasPhone: !!newPhone,
+        hasEmail: !!newEmail,
       });
     }
 
