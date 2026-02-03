@@ -20,7 +20,7 @@ export const modelOptions = [
 ];
 
 // Default model
-export const defaultModel = 'anthropic/claude-haiku-4.5';
+export const defaultModel = 'google/gemini-3-flash-preview';
 
 // Provider configuration
 export const providerConfigs: Record<SimpleProvider, {

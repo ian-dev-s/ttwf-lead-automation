@@ -72,7 +72,7 @@ export function LeadDetailDialog({ lead, open, onOpenChange }: LeadDetailDialogP
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[600px]">
+      <DialogContent className="sm:max-w-[600px] max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <div className="flex items-start justify-between gap-4 pr-8">
             <div>

@@ -92,7 +92,7 @@ export async function extractDataWithAI(
   
   const model = getLanguageModel({
     provider: 'OPENROUTER',
-    model: 'anthropic/claude-haiku-4.5',
+    model: 'google/gemini-3-flash-preview',
   });
 
   try {

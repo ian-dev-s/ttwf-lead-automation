@@ -6,14 +6,16 @@ import { SA_CITIES, TARGET_CATEGORIES } from '../constants';
 import { prisma } from '../db';
 import { sleep } from '../utils';
 import { createGoogleMapsScraper } from './google-maps';
+import { checkIfGoodProspect, quickQualityCheck } from './quality-checker';
 
 // Re-export constants for convenience
 export { SA_CITIES, TARGET_CATEGORIES };
 
-// In-memory store for job cancellation signals
-// Maps jobId -> { cancelled: boolean, scraper: any, browser: any }
+// In-memory store for job cancellation/completion signals
+// Maps jobId -> { cancelled: boolean, completed: boolean, scraper: any, browser: any }
 const runningJobs = new Map<string, { 
-  cancelled: boolean; 
+  cancelled: boolean;
+  completed: boolean; // New flag to signal job should stop
   scraper: ReturnType<typeof createGoogleMapsScraper> | null;
   browser: Browser | null;
 }>();
@@ -27,28 +29,60 @@ export function isJobCancelled(jobId: string): boolean {
 }
 
 /**
+ * Check if a job should stop (either cancelled or completed)
+ */
+export function shouldJobStop(jobId: string): boolean {
+  const job = runningJobs.get(jobId);
+  if (!job) return true; // If not found, stop
+  return job.cancelled || job.completed;
+}
+
+/**
+ * Mark a job as completed (reached target)
+ */
+export function markJobCompleted(jobId: string): void {
+  const job = runningJobs.get(jobId);
+  if (job) {
+    job.completed = true;
+    console.log(`🎯 Job ${jobId} marked as completed - stopping all operations`);
+  }
+}
+
+/**
  * Cancel a running job - signals it to stop and updates DB
+ * This is aggressive and will forcefully terminate all resources
  */
 export async function cancelJob(jobId: string): Promise<boolean> {
+  console.log(`🛑 CANCELLING JOB: ${jobId}`);
+  
   try {
     const jobState = runningJobs.get(jobId);
     
     if (jobState) {
-      // Signal cancellation
+      // Signal cancellation IMMEDIATELY
       jobState.cancelled = true;
-      console.log(`🛑 Cancellation signal sent for job: ${jobId}`);
+      jobState.completed = true; // Also mark as completed to stop all loops
       
-      // Force close browser/scraper to immediately stop
-      try {
-        if (jobState.scraper) {
-          await jobState.scraper.close();
+      console.log(`🛑 Cancellation flags set for job: ${jobId}`);
+      
+      // Force close browser/scraper to immediately stop - try multiple times
+      const closeWithRetry = async (resource: { close: () => Promise<void> } | null, name: string) => {
+        if (!resource) return;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await resource.close();
+            console.log(`   ✓ ${name} closed successfully`);
+            return;
+          } catch (e) {
+            console.log(`   ⚠️ Attempt ${attempt + 1} to close ${name} failed`);
+          }
         }
-        if (jobState.browser) {
-          await jobState.browser.close();
-        }
-      } catch (e) {
-        // Ignore errors during force close
-      }
+      };
+      
+      await Promise.all([
+        closeWithRetry(jobState.scraper, 'Scraper'),
+        closeWithRetry(jobState.browser, 'Browser'),
+      ]);
     }
     
     // Update database status
@@ -61,12 +95,29 @@ export async function cancelJob(jobId: string): Promise<boolean> {
       },
     });
     
+    console.log(`🛑 Job ${jobId} database status updated to CANCELLED`);
+    
     // Clean up from running jobs
     runningJobs.delete(jobId);
     
+    console.log(`🛑 Job ${jobId} fully cancelled and cleaned up`);
     return true;
   } catch (error) {
     console.error(`Failed to cancel job ${jobId}:`, error);
+    // Even if there's an error, try to mark as cancelled in DB
+    try {
+      await prisma.scrapingJob.update({
+        where: { id: jobId },
+        data: {
+          status: JobStatus.CANCELLED,
+          completedAt: new Date(),
+          error: 'Job cancelled by user (with cleanup errors)',
+        },
+      });
+    } catch (dbError) {
+      console.error(`Failed to update job status in DB:`, dbError);
+    }
+    runningJobs.delete(jobId);
     return false;
   }
 }
@@ -246,15 +297,15 @@ export async function runScrapingJob(jobId: string): Promise<void> {
   let leadsFound = 0;
   let browser: Browser | null = null;
 
-  // Register this job as running (for cancellation support)
-  runningJobs.set(jobId, { cancelled: false, scraper, browser: null });
+  // Register this job as running (for cancellation/completion support)
+  runningJobs.set(jobId, { cancelled: false, completed: false, scraper, browser: null });
 
   try {
     await scraper.initialize();
     
     // Check for cancellation before starting browser
-    if (isJobCancelled(jobId)) {
-      console.log(`🛑 Job ${jobId} cancelled before browser init`);
+    if (shouldJobStop(jobId)) {
+      console.log(`🛑 Job ${jobId} stopped before browser init`);
       return;
     }
     
@@ -282,22 +333,19 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     console.log(`   Locations: ${locations.slice(0, 3).join(', ')}${locations.length > 3 ? '...' : ''}\n`);
 
     // Iterate through categories and locations
+    categoryLoop:
     for (const category of categories) {
-      if (leadsFound >= job.leadsRequested) break;
-      
-      // Check for cancellation
-      if (isJobCancelled(jobId)) {
-        console.log(`🛑 Job ${jobId} cancelled during category loop`);
-        return;
+      // Check if we should stop (cancelled OR target reached)
+      if (shouldJobStop(jobId)) {
+        console.log(`🛑 Job ${jobId} stopping at category loop`);
+        break categoryLoop;
       }
 
       for (const location of locations) {
-        if (leadsFound >= job.leadsRequested) break;
-        
-        // Check for cancellation
-        if (isJobCancelled(jobId)) {
-          console.log(`🛑 Job ${jobId} cancelled during location loop`);
-          return;
+        // Check if we should stop (cancelled OR target reached)
+        if (shouldJobStop(jobId)) {
+          console.log(`🛑 Job ${jobId} stopping at location loop`);
+          break categoryLoop;
         }
 
         try {
@@ -312,12 +360,10 @@ export async function runScrapingJob(jobId: string): Promise<void> {
           });
 
           for (const business of businesses) {
-            if (leadsFound >= job.leadsRequested) break;
-            
-            // Check for cancellation
-            if (isJobCancelled(jobId)) {
-              console.log(`🛑 Job ${jobId} cancelled during business processing`);
-              return;
+            // Check if we should stop (cancelled OR target reached)
+            if (shouldJobStop(jobId)) {
+              console.log(`🛑 Job ${jobId} stopping at business loop`);
+              break categoryLoop;
             }
 
             // Check if this business already exists
@@ -338,13 +384,27 @@ export async function runScrapingJob(jobId: string): Promise<void> {
               continue;
             }
 
-            // Quick pre-filter: skip businesses with high-quality websites
-            if (business.website) {
-              const quickScore = await scraper.checkWebsiteQuality(business.website);
-              if (quickScore > 70) {
-                console.log(`   ⏭️  Skipping ${business.name} - likely has good website`);
+            // QUALITY CHECK: Determine if this is a good prospect
+            // Step 1: Quick URL pattern check (no API call)
+            const quickCheck = quickQualityCheck(business.website);
+            
+            let websiteQualityScore: number | undefined;
+            let isGoodProspect = quickCheck.isLikelyGoodProspect;
+            
+            if (!quickCheck.isLikelyGoodProspect && business.website) {
+              // Step 2: Has proper domain - do full PageSpeed API analysis
+              console.log(`   🔍 Checking website quality for: ${business.name}`);
+              const prospectCheck = await checkIfGoodProspect(business.website, 1);
+              isGoodProspect = prospectCheck.isGoodProspect;
+              websiteQualityScore = prospectCheck.qualityScore;
+              
+              if (!isGoodProspect) {
+                console.log(`   ⏭️  Skipping ${business.name} - has quality website (${websiteQualityScore}/100)`);
                 continue;
               }
+            } else {
+              websiteQualityScore = quickCheck.estimatedScore;
+              console.log(`   ✅ ${business.name} - ${quickCheck.reason} (score: ${quickCheck.estimatedScore})`);
             }
 
             console.log(`\n   🧠 AI Enrichment starting for: ${business.name}`);
@@ -368,6 +428,11 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                 1 // workerId
               );
 
+              // Override website quality with PageSpeed score if we have it
+              if (websiteQualityScore !== undefined) {
+                enrichedLead.websiteQualityScore = websiteQualityScore;
+              }
+
               // Check if lead is qualified
               if (!enrichedLead.isQualified && enrichedLead.qualificationTier === 'D') {
                 console.log(`   ⏭️  AI determined ${business.name} is not a good prospect (Tier D)`);
@@ -390,10 +455,11 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                   data: { leadsFound },
                 });
 
-                // If we've reached our target, stop immediately
+                // If we've reached our target, STOP IMMEDIATELY
                 if (leadsFound >= job.leadsRequested) {
-                  console.log(`\n🎯 Target reached! Stopping scraper.`);
-                  break;
+                  console.log(`\n🎯 TARGET REACHED (${leadsFound}/${job.leadsRequested})! STOPPING ALL OPERATIONS.`);
+                  markJobCompleted(jobId); // Mark as completed to stop all loops
+                  break categoryLoop; // Break out of ALL loops immediately
                 }
               }
             } catch (enrichError) {
@@ -410,7 +476,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
       }
     }
 
-    // Mark job as completed (unless it was cancelled)
+    // Mark job as completed in database (unless it was cancelled by user)
     if (!isJobCancelled(jobId)) {
       await prisma.scrapingJob.update({
         where: { id: jobId },
@@ -421,9 +487,9 @@ export async function runScrapingJob(jobId: string): Promise<void> {
         },
       });
 
-      console.log(`\n✅ AI-Powered Job completed! Found ${leadsFound} qualified lead(s)`);
+      console.log(`\n✅ AI-Powered Job completed! Found ${leadsFound}/${job.leadsRequested} qualified lead(s)`);
     } else {
-      console.log(`\n🛑 Job ${jobId} was cancelled. Found ${leadsFound} leads before cancellation.`);
+      console.log(`\n🛑 Job ${jobId} was CANCELLED by user. Found ${leadsFound} leads before cancellation.`);
     }
 
   } catch (error) {
