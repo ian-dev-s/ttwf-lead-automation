@@ -10,6 +10,7 @@ const createMessageSchema = z.object({
   type: z.nativeEnum(MessageType),
   subject: z.string().optional(),
   content: z.string().min(1, 'Content is required'),
+  status: z.nativeEnum(MessageStatus).optional(),
 });
 
 // GET /api/messages - Get messages with optional filtering
@@ -109,8 +110,11 @@ export async function POST(request: NextRequest) {
 
     const message = await prisma.message.create({
       data: {
-        ...validatedData,
-        status: MessageStatus.DRAFT,
+        leadId: validatedData.leadId,
+        type: validatedData.type,
+        subject: validatedData.subject,
+        content: validatedData.content,
+        status: validatedData.status || MessageStatus.DRAFT,
       },
       include: {
         lead: true,
