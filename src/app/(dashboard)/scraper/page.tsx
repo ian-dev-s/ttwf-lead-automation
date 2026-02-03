@@ -45,10 +45,20 @@ export default function ScraperPage() {
   const [selectedCity, setSelectedCity] = useState<string>('all');
   const [minRating, setMinRating] = useState(4.0);
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
+  const [stoppingJobId, setStoppingJobId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchJobs();
   }, []);
+  
+  // Auto-refresh jobs list every 5 seconds when there are running jobs
+  useEffect(() => {
+    const hasRunningJobs = jobs.some(job => job.status === 'RUNNING' || job.status === 'SCHEDULED');
+    if (!hasRunningJobs) return;
+    
+    const interval = setInterval(fetchJobs, 5000);
+    return () => clearInterval(interval);
+  }, [jobs]);
 
   const fetchJobs = async () => {
     try {
@@ -89,8 +99,29 @@ export default function ScraperPage() {
     }
   };
 
-  const handleStopAndDelete = async (jobId: string) => {
-    if (!confirm('Are you sure you want to stop and delete this job?')) return;
+  const handleStopJob = async (jobId: string) => {
+    if (!confirm('Are you sure you want to stop this scraping job?')) return;
+    
+    setStoppingJobId(jobId);
+    try {
+      const response = await fetch(`/api/scraper/${jobId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel' }),
+      });
+
+      if (!response.ok) throw new Error('Failed to stop job');
+
+      await fetchJobs();
+    } catch (error) {
+      console.error('Error stopping job:', error);
+    } finally {
+      setStoppingJobId(null);
+    }
+  };
+
+  const handleDeleteJob = async (jobId: string) => {
+    if (!confirm('Are you sure you want to delete this job? This cannot be undone.')) return;
     
     setDeletingJobId(jobId);
     try {
@@ -303,45 +334,48 @@ export default function ScraperPage() {
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-4">
-                      <div className="text-right text-sm text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <div className="text-right text-sm text-muted-foreground mr-2">
                         <p>{formatDateTime(job.scheduledFor)}</p>
                         {job.error && (
-                          <p className="text-red-500 text-xs mt-1">{job.error}</p>
+                          <p className="text-red-500 text-xs mt-1 max-w-[200px] truncate" title={job.error}>
+                            {job.error}
+                          </p>
                         )}
                       </div>
+                      {/* Stop button - only for running/scheduled jobs */}
                       {(job.status === 'RUNNING' || job.status === 'SCHEDULED') && (
                         <Button
-                          variant="destructive"
+                          variant="outline"
                           size="sm"
-                          onClick={() => handleStopAndDelete(job.id)}
-                          disabled={deletingJobId === job.id}
+                          onClick={() => handleStopJob(job.id)}
+                          disabled={stoppingJobId === job.id || deletingJobId === job.id}
+                          className="border-orange-500/50 text-orange-600 hover:bg-orange-500/10 hover:text-orange-700"
                         >
-                          {deletingJobId === job.id ? (
+                          {stoppingJobId === job.id ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
                             <>
                               <StopCircle className="h-4 w-4 mr-1" />
-                              Stop & Delete
+                              Stop
                             </>
                           )}
                         </Button>
                       )}
-                      {(job.status === 'COMPLETED' || job.status === 'FAILED' || job.status === 'CANCELLED') && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleStopAndDelete(job.id)}
-                          disabled={deletingJobId === job.id}
-                          className="text-muted-foreground hover:text-destructive"
-                        >
-                          {deletingJobId === job.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="h-4 w-4" />
-                          )}
-                        </Button>
-                      )}
+                      {/* Delete button - available for all jobs */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeleteJob(job.id)}
+                        disabled={deletingJobId === job.id || stoppingJobId === job.id}
+                        className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                      >
+                        {deletingJobId === job.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
+                      </Button>
                     </div>
                   </div>
                 ))}

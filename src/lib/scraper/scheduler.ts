@@ -10,6 +10,91 @@ import { createGoogleMapsScraper } from './google-maps';
 // Re-export constants for convenience
 export { SA_CITIES, TARGET_CATEGORIES };
 
+// In-memory store for job cancellation signals
+// Maps jobId -> { cancelled: boolean, scraper: any, browser: any }
+const runningJobs = new Map<string, { 
+  cancelled: boolean; 
+  scraper: ReturnType<typeof createGoogleMapsScraper> | null;
+  browser: Browser | null;
+}>();
+
+/**
+ * Check if a job has been cancelled
+ */
+export function isJobCancelled(jobId: string): boolean {
+  const job = runningJobs.get(jobId);
+  return job?.cancelled ?? false;
+}
+
+/**
+ * Cancel a running job - signals it to stop and updates DB
+ */
+export async function cancelJob(jobId: string): Promise<boolean> {
+  try {
+    const jobState = runningJobs.get(jobId);
+    
+    if (jobState) {
+      // Signal cancellation
+      jobState.cancelled = true;
+      console.log(`🛑 Cancellation signal sent for job: ${jobId}`);
+      
+      // Force close browser/scraper to immediately stop
+      try {
+        if (jobState.scraper) {
+          await jobState.scraper.close();
+        }
+        if (jobState.browser) {
+          await jobState.browser.close();
+        }
+      } catch (e) {
+        // Ignore errors during force close
+      }
+    }
+    
+    // Update database status
+    await prisma.scrapingJob.update({
+      where: { id: jobId },
+      data: {
+        status: JobStatus.CANCELLED,
+        completedAt: new Date(),
+        error: 'Job cancelled by user',
+      },
+    });
+    
+    // Clean up from running jobs
+    runningJobs.delete(jobId);
+    
+    return true;
+  } catch (error) {
+    console.error(`Failed to cancel job ${jobId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Delete a scraping job from the database
+ */
+export async function deleteJob(jobId: string): Promise<boolean> {
+  try {
+    // Make sure it's not running, cancel if it is
+    const jobState = runningJobs.get(jobId);
+    if (jobState) {
+      await cancelJob(jobId);
+    }
+    
+    // Delete the job from database
+    await prisma.scrapingJob.delete({
+      where: { id: jobId },
+    });
+    
+    console.log(`🗑️ Deleted job: ${jobId}`);
+    return true;
+  } catch (error) {
+    console.error(`Failed to delete job ${jobId}:`, error);
+    return false;
+  }
+}
+
 /**
  * Save an AI-enriched lead to the database
  */
@@ -161,14 +246,29 @@ export async function runScrapingJob(jobId: string): Promise<void> {
   let leadsFound = 0;
   let browser: Browser | null = null;
 
+  // Register this job as running (for cancellation support)
+  runningJobs.set(jobId, { cancelled: false, scraper, browser: null });
+
   try {
     await scraper.initialize();
+    
+    // Check for cancellation before starting browser
+    if (isJobCancelled(jobId)) {
+      console.log(`🛑 Job ${jobId} cancelled before browser init`);
+      return;
+    }
     
     // Create a separate browser for AI enrichment
     browser = await chromium.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
+    
+    // Update the running job state with browser reference
+    const jobState = runningJobs.get(jobId);
+    if (jobState) {
+      jobState.browser = browser;
+    }
 
     // Get search parameters
     const categories = job.categories.length > 0 ? job.categories : TARGET_CATEGORIES;
@@ -184,9 +284,21 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     // Iterate through categories and locations
     for (const category of categories) {
       if (leadsFound >= job.leadsRequested) break;
+      
+      // Check for cancellation
+      if (isJobCancelled(jobId)) {
+        console.log(`🛑 Job ${jobId} cancelled during category loop`);
+        return;
+      }
 
       for (const location of locations) {
         if (leadsFound >= job.leadsRequested) break;
+        
+        // Check for cancellation
+        if (isJobCancelled(jobId)) {
+          console.log(`🛑 Job ${jobId} cancelled during location loop`);
+          return;
+        }
 
         try {
           console.log(`\n📍 Searching: ${category} in ${location}`);
@@ -201,6 +313,12 @@ export async function runScrapingJob(jobId: string): Promise<void> {
 
           for (const business of businesses) {
             if (leadsFound >= job.leadsRequested) break;
+            
+            // Check for cancellation
+            if (isJobCancelled(jobId)) {
+              console.log(`🛑 Job ${jobId} cancelled during business processing`);
+              return;
+            }
 
             // Check if this business already exists
             const existingLead = await prisma.lead.findFirst({
@@ -292,33 +410,53 @@ export async function runScrapingJob(jobId: string): Promise<void> {
       }
     }
 
-    // Mark job as completed
-    await prisma.scrapingJob.update({
-      where: { id: jobId },
-      data: {
-        status: JobStatus.COMPLETED,
-        completedAt: new Date(),
-        leadsFound,
-      },
-    });
+    // Mark job as completed (unless it was cancelled)
+    if (!isJobCancelled(jobId)) {
+      await prisma.scrapingJob.update({
+        where: { id: jobId },
+        data: {
+          status: JobStatus.COMPLETED,
+          completedAt: new Date(),
+          leadsFound,
+        },
+      });
 
-    console.log(`\n✅ AI-Powered Job completed! Found ${leadsFound} qualified lead(s)`);
+      console.log(`\n✅ AI-Powered Job completed! Found ${leadsFound} qualified lead(s)`);
+    } else {
+      console.log(`\n🛑 Job ${jobId} was cancelled. Found ${leadsFound} leads before cancellation.`);
+    }
 
   } catch (error) {
-    console.error(`Job ${jobId} failed:`, error);
-    await prisma.scrapingJob.update({
-      where: { id: jobId },
-      data: {
-        status: JobStatus.FAILED,
-        completedAt: new Date(),
-        error: error instanceof Error ? error.message : 'Unknown error',
-      },
-    });
-  } finally {
-    await scraper.close();
-    if (browser) {
-      await browser.close();
+    // Don't update status if job was cancelled (already handled)
+    if (!isJobCancelled(jobId)) {
+      console.error(`Job ${jobId} failed:`, error);
+      await prisma.scrapingJob.update({
+        where: { id: jobId },
+        data: {
+          status: JobStatus.FAILED,
+          completedAt: new Date(),
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      });
     }
+  } finally {
+    // Clean up resources
+    try {
+      await scraper.close();
+    } catch (e) {
+      // Ignore close errors
+    }
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (e) {
+        // Ignore close errors
+      }
+    }
+    
+    // Remove from running jobs registry
+    runningJobs.delete(jobId);
+    console.log(`🏁 Job ${jobId} cleanup complete`);
   }
 }
 
