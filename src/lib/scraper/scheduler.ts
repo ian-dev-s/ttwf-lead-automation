@@ -496,6 +496,13 @@ export async function runScrapingJob(jobId: string): Promise<void> {
             maxResults: Math.min(3, job.leadsRequested - leadsFound),
           });
           
+          // Check IMMEDIATELY after expensive async operation
+          if (shouldJobStop(jobId)) {
+            console.log(`🛑 Job ${jobId} cancelled during search - stopping immediately`);
+            jobLog.warning(jobId, '🛑 Job cancelled during search');
+            break categoryLoop;
+          }
+          
           jobLog.info(jobId, `Found ${businesses.length} potential businesses`);
 
           for (const business of businesses) {
@@ -514,6 +521,12 @@ export async function runScrapingJob(jobId: string): Promise<void> {
               business.name,
               location
             );
+            
+            // Check for cancellation after DB lookup
+            if (shouldJobStop(jobId)) {
+              console.log(`🛑 Job ${jobId} cancelled - stopping`);
+              break categoryLoop;
+            }
             
             if (historyCheck.wasAnalyzedBefore) {
               if (!historyCheck.isGoodProspect) {
@@ -571,6 +584,14 @@ export async function runScrapingJob(jobId: string): Promise<void> {
               console.log(`   🔍 Checking website quality for: ${business.name}`);
               jobLog.progress(jobId, `🔍 Analyzing website quality: ${business.website}`);
               const prospectCheck = await checkIfGoodProspect(business.website, 1);
+              
+              // Check IMMEDIATELY after expensive API call
+              if (shouldJobStop(jobId)) {
+                console.log(`🛑 Job ${jobId} cancelled during quality check - stopping`);
+                jobLog.warning(jobId, '🛑 Job cancelled during quality check');
+                break categoryLoop;
+              }
+              
               isGoodProspect = prospectCheck.isGoodProspect;
               websiteQualityScore = prospectCheck.qualityScore;
               
@@ -620,6 +641,13 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                 category,
                 1 // workerId
               );
+
+              // Check IMMEDIATELY after expensive AI enrichment
+              if (shouldJobStop(jobId)) {
+                console.log(`🛑 Job ${jobId} cancelled during AI enrichment - stopping`);
+                jobLog.warning(jobId, '🛑 Job cancelled during AI enrichment');
+                break categoryLoop;
+              }
 
               // Override website quality with PageSpeed score if we have it
               if (websiteQualityScore !== undefined) {
@@ -699,8 +727,17 @@ export async function runScrapingJob(jobId: string): Promise<void> {
             await sleep(1000);
           }
         } catch (error) {
-          console.error(`   ❌ Error searching ${category} in ${location}:`, error);
-          jobLog.error(jobId, `❌ Error searching ${category} in ${location}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          
+          // If browser was closed (cancelled), break out immediately
+          if (errorMessage === 'BROWSER_CLOSED' || shouldJobStop(jobId)) {
+            console.log(`🛑 Job ${jobId} stopping - browser closed or cancelled`);
+            jobLog.warning(jobId, '🛑 Stopping job - browser closed or cancelled');
+            break categoryLoop;
+          }
+          
+          console.error(`   ❌ Error searching ${category} in ${location}:`, errorMessage);
+          jobLog.error(jobId, `❌ Error searching ${category} in ${location}: ${errorMessage}`);
         }
       }
     }

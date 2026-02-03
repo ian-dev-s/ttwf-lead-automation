@@ -3,17 +3,17 @@
  */
 
 import { Browser, Page } from 'playwright';
+import { extractBusinessDetails } from './business-extractor';
+import {
+    DELAY_BETWEEN_LISTINGS,
+    MAX_RESULTS_PER_SEARCH,
+    TARGET_LEADS
+} from './config';
+import { scrapeEmailsFromWebsite } from './email-scraper';
+import { isGoodProspect } from './prospect-checker';
+import { getTotalAdded, stopAllWorkers } from './state';
 import { ScrapedBusinessResult } from './types';
 import { sleep } from './utils';
-import { stopAllWorkers, getTotalAdded } from './state';
-import { 
-  MAX_RESULTS_PER_SEARCH, 
-  DELAY_BETWEEN_LISTINGS,
-  TARGET_LEADS 
-} from './config';
-import { extractBusinessDetails } from './business-extractor';
-import { isGoodProspect } from './prospect-checker';
-import { scrapeEmailsFromWebsite } from './email-scraper';
 import { isSocialOrDirectory } from './website-classifier';
 
 /**
@@ -59,10 +59,16 @@ export async function scrapeGoogleMaps(
 
     // Process each listing
     for (let i = 0; i < listingCount; i++) {
-      // Check if we should stop
+      // Check if we should stop - API failure
       if (stopAllWorkers) {
         console.log(`   [Worker ${workerId}] ⛔ Stopping due to API failure`);
         return null;
+      }
+      
+      // Check if target already reached (by this or other workers)
+      if (getTotalAdded() >= TARGET_LEADS) {
+        console.log(`   [Worker ${workerId}] 🎯 Target already reached, skipping remaining listings`);
+        break;
       }
       
       const result = await processListing(page, browser, i, workerId, results.length);
@@ -75,8 +81,9 @@ export async function scrapeGoogleMaps(
       if (result) {
         results.push(result);
         
-        // Check if we've reached target leads
-        if (getTotalAdded() + results.length >= TARGET_LEADS) {
+        // Check if adding this result will reach/exceed target
+        // Note: We check >= since saveLeadToDatabase might skip duplicates
+        if (getTotalAdded() >= TARGET_LEADS) {
           console.log(`   [Worker ${workerId}] 🎯 Target of ${TARGET_LEADS} leads reached!`);
           break;
         }

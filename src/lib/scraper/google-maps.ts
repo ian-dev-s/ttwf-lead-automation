@@ -115,8 +115,17 @@ export class GoogleMapsScraper {
           console.error('Error extracting business details:', error);
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       console.error('Error searching businesses:', error);
+      
+      // If browser/page was closed, throw a special error to signal job should stop
+      if (errorMessage.includes('browser has been closed') || 
+          errorMessage.includes('Target page, context or browser has been closed') ||
+          errorMessage.includes('page has been closed') ||
+          errorMessage.includes('Target closed')) {
+        throw new Error('BROWSER_CLOSED');
+      }
     }
 
     return results;

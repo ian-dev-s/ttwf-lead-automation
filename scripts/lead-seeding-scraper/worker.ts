@@ -106,7 +106,19 @@ export async function workerTask(
             const total = incrementTotalAdded();
             workerAdded++;
             console.log(`   [Worker ${workerId}] 💾 Saved (total: ${total}/${TARGET_LEADS})`);
+            
+            // Check immediately after saving if we've hit the target
+            if (total >= TARGET_LEADS) {
+              console.log(`   [Worker ${workerId}] 🎯 Target of ${TARGET_LEADS} leads reached! Stopping immediately.`);
+              break;
+            }
           }
+        }
+        
+        // Check again before sleeping to avoid unnecessary delay when target is reached
+        if (getTotalAdded() >= TARGET_LEADS) {
+          console.log(`   [Worker ${workerId}] 🛑 Stopping - target reached`);
+          break;
         }
 
         await sleep(DELAY_BETWEEN_SEARCHES);
