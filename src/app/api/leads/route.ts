@@ -1,5 +1,6 @@
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { events } from '@/lib/events';
 import { calculateLeadScore } from '@/lib/utils';
 import { LeadStatus } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
@@ -128,6 +129,13 @@ export async function POST(request: NextRequest) {
         source: validatedData.source || 'manual',
         createdById: session.user.id,
       },
+    });
+
+    // Publish real-time event
+    await events.leadCreated({
+      id: lead.id,
+      businessName: lead.businessName,
+      status: lead.status,
     });
 
     return NextResponse.json(lead, { status: 201 });

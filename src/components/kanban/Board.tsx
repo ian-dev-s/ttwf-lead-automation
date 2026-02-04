@@ -1,10 +1,12 @@
 'use client';
 
+import { useLeadsRealtime } from '@/hooks/use-realtime';
 import { kanbanColumnOrder, leadStatusLabels } from '@/lib/utils';
 import { DragDropContext, DropResult } from '@hello-pangea/dnd';
 import { Lead, LeadStatus } from '@prisma/client';
+import { RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useTransition } from 'react';
 import { KanbanColumn } from './Column';
 
 interface KanbanBoardProps {
@@ -15,6 +17,36 @@ export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
   const router = useRouter();
   const [leads, setLeads] = useState<Lead[]>(initialLeads);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isPending, startTransition] = useTransition();
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  
+  // Skip next refresh if we just made a local change
+  const [skipNextRefresh, setSkipNextRefresh] = useState(false);
+
+  // Fetch leads from the server
+  const refreshLeads = useCallback(async () => {
+    // Skip refresh if we just made a local change (to avoid flicker)
+    if (skipNextRefresh) {
+      setSkipNextRefresh(false);
+      return;
+    }
+    
+    try {
+      const response = await fetch('/api/leads?limit=500');
+      if (response.ok) {
+        const data = await response.json();
+        startTransition(() => {
+          setLeads(data.data);
+          setLastUpdated(new Date());
+        });
+      }
+    } catch (error) {
+      console.error('Failed to refresh leads:', error);
+    }
+  }, [skipNextRefresh]);
+
+  // Set up real-time updates
+  const { isConnected } = useLeadsRealtime(refreshLeads);
 
   // Group leads by status and sort alphabetically by business name
   const leadsByStatus = kanbanColumnOrder.reduce((acc, status) => {
@@ -43,6 +75,9 @@ export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
       const newStatus = destination.droppableId as LeadStatus;
       const leadId = draggableId;
 
+      // Skip next refresh since we're making a local change
+      setSkipNextRefresh(true);
+
       // Optimistically update UI
       setLeads((prevLeads) =>
         prevLeads.map((lead) =>
@@ -63,16 +98,23 @@ export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
           throw new Error('Failed to update status');
         }
 
-        router.refresh();
+        // Don't call router.refresh() - real-time updates will handle it
       } catch (error) {
         console.error('Error updating lead status:', error);
-        // Revert on error
-        setLeads(initialLeads);
+        // Revert on error and clear skip flag
+        setSkipNextRefresh(false);
+        setLeads((prevLeads) =>
+          prevLeads.map((lead) =>
+            lead.id === leadId
+              ? { ...lead, status: source.droppableId as LeadStatus }
+              : lead
+          )
+        );
       } finally {
         setIsUpdating(false);
       }
     },
-    [initialLeads, router]
+    []
   );
 
   // Refresh leads when initialLeads changes
@@ -81,14 +123,44 @@ export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
   }, [initialLeads]);
 
   return (
-    <div className="h-full">
+    <div className="h-full flex flex-col">
+      {/* Status Bar */}
+      <div className="flex items-center justify-between mb-4 px-1">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          {isConnected ? (
+            <>
+              <Wifi className="h-4 w-4 text-green-500" />
+              <span className="text-green-600 dark:text-green-400">Connected</span>
+            </>
+          ) : (
+            <>
+              <WifiOff className="h-4 w-4 text-muted-foreground" />
+              <span>Offline</span>
+            </>
+          )}
+          {lastUpdated && (
+            <span className="text-xs">
+              • {lastUpdated.toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={refreshLeads}
+          disabled={isPending}
+          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={`h-3 w-3 ${isPending ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+      </div>
+
       {isUpdating && (
         <div className="fixed top-4 right-4 bg-primary text-primary-foreground px-4 py-2 rounded-md shadow-lg z-50">
           Updating...
         </div>
       )}
       <DragDropContext onDragEnd={handleDragEnd}>
-        <div className="flex gap-4 overflow-x-auto pb-4 h-full">
+        <div className="flex gap-4 overflow-x-auto pb-4 flex-1">
           {kanbanColumnOrder.map((status) => (
             <KanbanColumn
               key={status}

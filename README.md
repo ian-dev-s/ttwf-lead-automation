@@ -49,6 +49,7 @@ An AI-powered lead generation and tracking tool for The Tiny Web Factory. Find S
 
    ```env
    DATABASE_URL="postgresql://ttwf:ttwf_secure_password@localhost:5432/ttwf_leads?schema=public"
+   REDIS_URL="redis://localhost:6379"
    NEXTAUTH_SECRET="your-secret-key"
    NEXTAUTH_URL="http://localhost:3000"
 

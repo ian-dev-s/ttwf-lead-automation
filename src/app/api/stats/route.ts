@@ -1,125 +1,76 @@
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { LeadStatus } from '@prisma/client';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 // GET /api/stats - Get dashboard statistics
-export async function GET(_request: NextRequest) {
+export async function GET() {
   try {
     const session = await auth();
     if (!session?.user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Get total leads
-    const totalLeads = await prisma.lead.count();
-
-    // Get leads by status
-    const leadsByStatus = await prisma.lead.groupBy({
-      by: ['status'],
-      _count: true,
-    });
-
-    // Convert to record format
-    const statusCounts: Record<LeadStatus, number> = {
-      NEW: 0,
-      QUALIFIED: 0,
-      MESSAGE_READY: 0,
-      PENDING_APPROVAL: 0,
-      CONTACTED: 0,
-      RESPONDED: 0,
-      CONVERTED: 0,
-      NOT_INTERESTED: 0,
-      REJECTED: 0,
-      INVALID: 0,
-    };
-
-    leadsByStatus.forEach((item) => {
-      statusCounts[item.status] = item._count;
-    });
-
-    // Get leads created this week
-    const oneWeekAgo = new Date();
-    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-
-    const leadsThisWeek = await prisma.lead.count({
-      where: {
-        createdAt: {
-          gte: oneWeekAgo,
+    const [
+      totalLeads,
+      leadsByStatus,
+      recentLeads,
+      pendingMessages,
+      weeklyLeads,
+    ] = await Promise.all([
+      prisma.lead.count(),
+      prisma.lead.groupBy({
+        by: ['status'],
+        _count: true,
+      }),
+      prisma.lead.findMany({
+        take: 5,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          businessName: true,
+          status: true,
+          location: true,
+          createdAt: true,
         },
-      },
-    });
-
-    // Calculate conversion rate
-    const convertedLeads = statusCounts.CONVERTED;
-    const contactedLeads = statusCounts.CONTACTED + statusCounts.RESPONDED + 
-                          statusCounts.CONVERTED + statusCounts.NOT_INTERESTED;
-    const conversionRate = contactedLeads > 0 
-      ? Math.round((convertedLeads / contactedLeads) * 100) 
-      : 0;
-
-    // Get recent activity
-    const recentLeads = await prisma.lead.findMany({
-      take: 5,
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        businessName: true,
-        status: true,
-        createdAt: true,
-      },
-    });
-
-    const recentMessages = await prisma.message.findMany({
-      take: 5,
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        type: true,
-        status: true,
-        createdAt: true,
-        lead: {
-          select: {
-            businessName: true,
+      }),
+      prisma.message.count({
+        where: {
+          status: {
+            in: ['DRAFT', 'PENDING_APPROVAL', 'APPROVED'],
           },
         },
-      },
-    });
-
-    // Get pending messages count
-    const pendingMessages = await prisma.message.count({
-      where: {
-        status: {
-          in: ['DRAFT', 'PENDING_APPROVAL', 'APPROVED'],
+      }),
+      prisma.lead.count({
+        where: {
+          createdAt: {
+            gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+          },
         },
-      },
-    });
+      }),
+    ]);
 
-    // Get active scraping jobs
-    const activeJobs = await prisma.scrapingJob.count({
-      where: {
-        status: 'RUNNING',
+    const statusCounts = leadsByStatus.reduce(
+      (acc, item) => {
+        acc[item.status] = item._count;
+        return acc;
       },
-    });
+      {} as Record<string, number>
+    );
 
     return NextResponse.json({
       totalLeads,
-      newLeads: statusCounts.NEW,
-      qualifiedLeads: statusCounts.QUALIFIED,
-      contactedLeads,
-      convertedLeads,
-      leadsThisWeek,
-      conversionRate,
-      leadsByStatus: statusCounts,
+      newLeads: statusCounts['NEW'] || 0,
+      qualifiedLeads: statusCounts['QUALIFIED'] || 0,
+      contactedLeads: (statusCounts['CONTACTED'] || 0) + (statusCounts['RESPONDED'] || 0),
+      convertedLeads: statusCounts['CONVERTED'] || 0,
       pendingMessages,
-      activeJobs,
+      weeklyLeads,
       recentLeads,
-      recentMessages,
     });
   } catch (error) {
     console.error('Error fetching stats:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch statistics' },
+      { error: 'Failed to fetch stats' },
       { status: 500 }
     );
   }

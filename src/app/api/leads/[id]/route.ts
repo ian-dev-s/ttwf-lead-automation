@@ -1,5 +1,6 @@
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { events } from '@/lib/events';
 import { calculateLeadScore } from '@/lib/utils';
 import { LeadStatus } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
@@ -177,6 +178,22 @@ export async function PATCH(
       },
     });
 
+    // Publish real-time event
+    if (validatedData.status && validatedData.status !== currentLead.status) {
+      await events.leadStatusChanged({
+        id: lead.id,
+        businessName: lead.businessName,
+        status: lead.status,
+        previousStatus: currentLead.status,
+      });
+    } else {
+      await events.leadUpdated({
+        id: lead.id,
+        businessName: lead.businessName,
+        status: lead.status,
+      });
+    }
+
     return NextResponse.json(lead);
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -217,6 +234,9 @@ export async function DELETE(
     await prisma.lead.delete({
       where: { id },
     });
+
+    // Publish real-time event
+    await events.leadDeleted(id);
 
     return NextResponse.json({ success: true });
   } catch (error) {

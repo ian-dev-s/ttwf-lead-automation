@@ -1,5 +1,6 @@
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { events } from '@/lib/events';
 import { LeadStatus } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -46,16 +47,26 @@ export async function PATCH(
       return NextResponse.json(currentLead);
     }
 
-    // Create status history entry
-    await prisma.statusHistory.create({
-      data: {
-        leadId: id,
-        fromStatus: currentLead.status,
-        toStatus: status,
-        changedById: session.user.id,
-        notes,
-      },
+    // Verify the user exists before creating status history
+    const userExists = await prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { id: true },
     });
+
+    // Create status history entry (only if user exists)
+    if (userExists) {
+      await prisma.statusHistory.create({
+        data: {
+          leadId: id,
+          fromStatus: currentLead.status,
+          toStatus: status,
+          changedById: session.user.id,
+          notes,
+        },
+      });
+    } else {
+      console.warn(`[Status Update] User ${session.user.id} not found in database, skipping status history`);
+    }
 
     // Update the lead
     const updateData: any = { status };
@@ -68,6 +79,14 @@ export async function PATCH(
     const lead = await prisma.lead.update({
       where: { id },
       data: updateData,
+    });
+
+    // Publish real-time event for status change
+    await events.leadStatusChanged({
+      id: lead.id,
+      businessName: lead.businessName,
+      status: lead.status,
+      previousStatus: currentLead.status,
     });
 
     return NextResponse.json(lead);

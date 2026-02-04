@@ -5,6 +5,7 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { config } from 'dotenv';
+import Redis from 'ioredis';
 import { Pool } from 'pg';
 import { EnrichedLead } from './lead-enricher';
 import { ScrapedBusiness, WebsiteQualityResult } from './types';
@@ -16,6 +17,41 @@ import {
 
 // Load environment variables
 config();
+
+// Redis client for publishing real-time events
+let redisClient: Redis | null = null;
+
+function getRedisClient(): Redis | null {
+  if (!redisClient && process.env.REDIS_URL) {
+    try {
+      redisClient = new Redis(process.env.REDIS_URL, {
+        maxRetriesPerRequest: 1,
+        retryStrategy: () => null, // Don't retry - just skip publishing if Redis is down
+      });
+      redisClient.on('error', () => {
+        // Silently ignore Redis errors - real-time updates are optional
+      });
+    } catch {
+      // Redis not available - that's fine, just skip publishing
+    }
+  }
+  return redisClient;
+}
+
+async function publishLeadCreated(leadId: string, businessName: string): Promise<void> {
+  const redis = getRedisClient();
+  if (!redis) return;
+  
+  try {
+    await redis.publish('app:events', JSON.stringify({
+      type: 'lead:created',
+      data: { id: leadId, businessName, status: 'NEW' },
+      timestamp: Date.now(),
+    }));
+  } catch {
+    // Ignore publish errors
+  }
+}
 
 // Create PostgreSQL connection pool
 const pool = new Pool({
@@ -68,7 +104,7 @@ export async function saveEnrichedLeadToDatabase(
     const notes = buildEnrichedNotes(enriched, qualityScore, qualityDetails);
 
     // Create the lead with all enriched data
-    await prisma.lead.create({
+    const lead = await prisma.lead.create({
       data: {
         businessName: enriched.name,
         email: enriched.email || null,
@@ -106,6 +142,9 @@ export async function saveEnrichedLeadToDatabase(
         },
       },
     });
+
+    // Publish real-time event
+    await publishLeadCreated(lead.id, lead.businessName);
 
     return true;
   } catch (error: any) {
@@ -210,7 +249,7 @@ export async function saveLeadToDatabase(
     const notes = buildNotes(business, qualityScore, qualityDetails);
 
     // Create the lead
-    await prisma.lead.create({
+    const lead = await prisma.lead.create({
       data: {
         businessName: business.name,
         email: primaryEmail,
@@ -243,6 +282,9 @@ export async function saveLeadToDatabase(
         },
       },
     });
+
+    // Publish real-time event
+    await publishLeadCreated(lead.id, lead.businessName);
 
     return true;
   } catch (error: any) {
@@ -299,4 +341,8 @@ export async function getLeadCount(): Promise<number> {
  */
 export async function disconnectDatabase(): Promise<void> {
   await prisma.$disconnect();
+  if (redisClient) {
+    await redisClient.quit();
+    redisClient = null;
+  }
 }
