@@ -219,15 +219,22 @@ export function invalidateProcessCache(): void {
 
 /**
  * Kill a specific process by PID (cross-platform)
+ * On Windows, uses /T flag to kill the entire process tree
  */
 export async function killProcess(pid: number): Promise<boolean> {
   const osType = getOsType();
   
   try {
     if (osType === 'windows') {
-      await execAsync(`taskkill /F /PID ${pid}`);
+      // /F = Force, /T = Kill process tree (all child processes)
+      await execAsync(`taskkill /F /T /PID ${pid}`);
     } else {
-      await execAsync(`kill -9 ${pid}`);
+      // On Unix, kill the process group if possible
+      try {
+        await execAsync(`kill -9 -${pid}`); // Kill process group
+      } catch {
+        await execAsync(`kill -9 ${pid}`); // Fallback to single process
+      }
     }
     
     unregisterBrowserPid(pid);

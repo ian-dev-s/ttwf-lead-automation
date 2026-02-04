@@ -17,7 +17,7 @@ import {
 import { Slider } from '@/components/ui/slider';
 import { formatDateTime } from '@/lib/utils';
 import { Activity, CheckCircle, Clock, Loader2, Play, Search, Sparkles, StopCircle, Trash2, XCircle } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface ScrapingJob {
   id: string;
@@ -49,23 +49,55 @@ export default function ScraperPage() {
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
   const [stoppingJobId, setStoppingJobId] = useState<string | null>(null);
   const [viewingJobId, setViewingJobId] = useState<string | null>(null);
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
+
+  // Track if we had running jobs recently (to continue polling after completion)
+  const [hadRunningJobsRecently, setHadRunningJobsRecently] = useState(false);
+  const recentlyCompletedTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     fetchJobs();
   }, []);
   
   // Auto-refresh jobs list when there are running/scheduled jobs
-  // Uses faster polling (3s) for running jobs, slower (10s) for scheduled
+  // Continues polling for 10 seconds after jobs complete to catch final status
   useEffect(() => {
     const hasRunningJobs = jobs.some(job => job.status === 'RUNNING');
     const hasScheduledJobs = jobs.some(job => job.status === 'SCHEDULED');
     
-    if (!hasRunningJobs && !hasScheduledJobs) return;
+    // If we have running jobs, mark that we had them recently
+    if (hasRunningJobs) {
+      setHadRunningJobsRecently(true);
+      // Clear any existing timeout
+      if (recentlyCompletedTimeoutRef.current) {
+        clearTimeout(recentlyCompletedTimeoutRef.current);
+        recentlyCompletedTimeoutRef.current = null;
+      }
+    } else if (hadRunningJobsRecently) {
+      // Jobs just finished - continue polling for 10 more seconds
+      recentlyCompletedTimeoutRef.current = setTimeout(() => {
+        setHadRunningJobsRecently(false);
+      }, 10000);
+    }
     
-    // Use faster polling when jobs are actively running
-    const interval = setInterval(fetchJobs, hasRunningJobs ? 3000 : 10000);
+    // Determine if we should poll
+    const shouldPoll = hasRunningJobs || hasScheduledJobs || hadRunningJobsRecently;
+    if (!shouldPoll) return;
+    
+    // Use faster polling when jobs are actively running, slower otherwise
+    const pollInterval = hasRunningJobs ? 3000 : 5000;
+    const interval = setInterval(fetchJobs, pollInterval);
     return () => clearInterval(interval);
-  }, [jobs]);
+  }, [jobs, hadRunningJobsRecently]);
+  
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (recentlyCompletedTimeoutRef.current) {
+        clearTimeout(recentlyCompletedTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const fetchJobs = async () => {
     try {
@@ -148,6 +180,31 @@ export default function ScraperPage() {
       console.error('Error deleting job:', error);
     } finally {
       setDeletingJobId(null);
+    }
+  };
+
+  const handleDeleteAllJobs = async () => {
+    const nonRunningJobs = jobs.filter(job => job.status !== 'RUNNING');
+    if (nonRunningJobs.length === 0) {
+      alert('No jobs to delete (running jobs cannot be deleted)');
+      return;
+    }
+    
+    if (!confirm(`Are you sure you want to delete ${nonRunningJobs.length} job(s)? This cannot be undone.`)) return;
+    
+    setIsDeletingAll(true);
+    try {
+      // Delete all non-running jobs in parallel
+      const deletePromises = nonRunningJobs.map(job => 
+        fetch(`/api/scraper/${job.id}`, { method: 'DELETE' })
+      );
+      
+      await Promise.all(deletePromises);
+      await fetchJobs();
+    } catch (error) {
+      console.error('Error deleting jobs:', error);
+    } finally {
+      setIsDeletingAll(false);
     }
   };
 
@@ -308,11 +365,29 @@ export default function ScraperPage() {
 
         {/* Recent Jobs */}
         <Card>
-          <CardHeader>
-            <CardTitle>Recent Jobs</CardTitle>
-            <CardDescription>
-              View the status and results of your scraping jobs
-            </CardDescription>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <div>
+              <CardTitle>Recent Jobs</CardTitle>
+              <CardDescription>
+                View the status and results of your scraping jobs
+              </CardDescription>
+            </div>
+            {jobs.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDeleteAllJobs}
+                disabled={isDeletingAll || jobs.every(job => job.status === 'RUNNING')}
+                className="text-destructive hover:text-destructive hover:bg-destructive/10"
+              >
+                {isDeletingAll ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4 mr-2" />
+                )}
+                Delete All
+              </Button>
+            )}
           </CardHeader>
           <CardContent>
             {isLoading ? (

@@ -124,13 +124,32 @@ export async function PATCH(
         return NextResponse.json({ error: 'Job not found' }, { status: 404 });
       }
 
-      if (job.status !== 'RUNNING') {
+      // Allow cancelling RUNNING or SCHEDULED jobs
+      if (job.status !== 'RUNNING' && job.status !== 'SCHEDULED') {
         return NextResponse.json(
-          { error: 'Job is not running' },
+          { error: 'Job is not running or scheduled' },
           { status: 400 }
         );
       }
 
+      // For SCHEDULED jobs that haven't started, just update the DB directly
+      if (job.status === 'SCHEDULED') {
+        await prisma.scrapingJob.update({
+          where: { id: params.id },
+          data: {
+            status: 'CANCELLED',
+            completedAt: new Date(),
+            error: 'Job cancelled by user before starting',
+          },
+        });
+        console.log(`Cancelled scheduled job: ${params.id}`);
+        return NextResponse.json({
+          success: true,
+          message: 'Scheduled job cancelled',
+        });
+      }
+
+      // For RUNNING jobs, use the full cancellation flow
       const cancelled = await cancelJob(params.id);
       
       if (cancelled) {

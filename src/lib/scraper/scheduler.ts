@@ -15,8 +15,10 @@ import { createGoogleMapsScraper } from './google-maps';
 import { clearJobLogs, initJobLogs, jobLog } from './job-logger';
 import {
     getProcessStatus,
+    getRegisteredPids,
     getScraperChromeArgs,
     killAllScraperProcesses,
+    killProcess,
     processManager,
     registerBrowserPid,
     unregisterBrowserPid,
@@ -204,24 +206,31 @@ export async function cancelJob(jobId: string): Promise<boolean> {
       
       console.log(`🛑 Cancellation flags set for job: ${jobId}`);
       
-      // Force close browser/scraper to immediately stop - try multiple times
-      const closeWithRetry = async (resource: { close: () => Promise<void> } | null, name: string) => {
-        if (!resource) return;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            await resource.close();
-            console.log(`   ✓ ${name} closed successfully`);
-            return;
-          } catch (e) {
-            console.log(`   ⚠️ Attempt ${attempt + 1} to close ${name} failed`);
-          }
-        }
-      };
+      // AGGRESSIVE: Kill browser processes directly by PID
+      // This is more reliable than trying to close gracefully
+      const registeredPids = getRegisteredPids();
+      console.log(`🛑 Killing ${registeredPids.length} registered browser processes...`);
       
-      await Promise.all([
-        closeWithRetry(jobState.scraper, 'Scraper'),
-        closeWithRetry(jobState.browser, 'Browser'),
-      ]);
+      for (const pid of registeredPids) {
+        try {
+          await killProcess(pid);
+          console.log(`   ✓ Killed process ${pid}`);
+        } catch (e) {
+          console.log(`   ⚠️ Failed to kill process ${pid}:`, e);
+        }
+      }
+      
+      // Also try graceful close as backup (non-blocking, don't wait)
+      if (jobState.scraper) {
+        jobState.scraper.close().catch(() => {});
+      }
+      if (jobState.browser) {
+        jobState.browser.close().catch(() => {});
+      }
+    } else {
+      // Job not in memory, but might have orphaned processes - kill all scraper processes
+      console.log(`🛑 Job ${jobId} not in memory, killing all scraper processes...`);
+      await killAllScraperProcesses();
     }
     
     // Update database status
@@ -816,7 +825,9 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     }
 
     // Mark job as completed in database (unless it was cancelled by user)
-    if (!isJobCancelled(jobId)) {
+    // Check BOTH isJobCancelled AND cancellationToken since cancelJob removes from runningJobs
+    const wasCancelled = isJobCancelled(jobId) || cancellationToken.isCancelled;
+    if (!wasCancelled) {
       await prisma.scrapingJob.update({
         where: { id: jobId },
         data: {
