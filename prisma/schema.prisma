@@ -261,6 +261,10 @@ model ScrapingJob {
   // Error handling
   error          String?
   
+  // Process tracking - persisted PIDs for safe cleanup
+  // Format: JSON array of {pid: number, startedAt: string, commandLineHash: string}
+  processPids    String?   @map("process_pids") @db.Text
+  
   // Tracking
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")

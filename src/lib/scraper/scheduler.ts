@@ -5,23 +5,25 @@ import { SmartEnrichedLead, smartEnrichLead } from '../ai/smart-enricher';
 import { SA_CITIES, TARGET_CATEGORIES } from '../constants';
 import { prisma } from '../db';
 import {
-    JobCancelledError,
     cancelJobToken,
     createCancellationToken,
+    JobCancelledError,
     removeCancellationToken,
     sleepWithCancellation
 } from './cancellation';
 import { createGoogleMapsScraper } from './google-maps';
 import { clearJobLogs, initJobLogs, jobLog } from './job-logger';
 import {
+    clearJobPids,
+    findAndKillJobProcesses,
+    getJobProcessInfo,
     getProcessStatus,
-    getRegisteredPids,
     getScraperChromeArgs,
     killAllScraperProcesses,
-    killProcess,
+    killJobProcesses,
     processManager,
-    registerBrowserPid,
-    unregisterBrowserPid,
+    restoreProcessTracking,
+    TrackedProcessInfo
 } from './process-manager';
 import { checkIfGoodProspect, quickQualityCheck } from './quality-checker';
 
@@ -29,6 +31,92 @@ import { checkIfGoodProspect, quickQualityCheck } from './quality-checker';
 export {
     getProcessStatus, killAllScraperProcesses, processManager
 };
+
+// ============================================================================
+// PROCESS PID PERSISTENCE - Save and restore PIDs to/from database
+// ============================================================================
+
+/**
+ * Persist process PIDs to the database for a job
+ * This allows recovery after server restart
+ */
+async function persistJobProcessPids(jobId: string): Promise<void> {
+  try {
+    const processInfo = getJobProcessInfo(jobId);
+    if (processInfo.length === 0) return;
+    
+    // Use type assertion to bypass stale TypeScript cache
+    await prisma.scrapingJob.update({
+      where: { id: jobId },
+      data: {
+        processPids: JSON.stringify(processInfo),
+      } as Record<string, unknown>,
+    });
+    console.log(`[Job ${jobId}] Persisted ${processInfo.length} process PIDs to database`);
+  } catch (error) {
+    console.error(`[Job ${jobId}] Failed to persist process PIDs:`, error);
+  }
+}
+
+/**
+ * Clear persisted process PIDs from the database for a job
+ */
+async function clearPersistedProcessPids(jobId: string): Promise<void> {
+  try {
+    // Use type assertion to bypass stale TypeScript cache
+    await prisma.scrapingJob.update({
+      where: { id: jobId },
+      data: {
+        processPids: null,
+      } as Record<string, unknown>,
+    });
+    console.log(`[Job ${jobId}] Cleared persisted process PIDs from database`);
+  } catch (error) {
+    console.error(`[Job ${jobId}] Failed to clear persisted process PIDs:`, error);
+  }
+}
+
+/**
+ * Load persisted process PIDs from database and restore tracking
+ */
+async function loadPersistedProcessPids(jobId: string): Promise<TrackedProcessInfo[]> {
+  try {
+    const job = await prisma.scrapingJob.findUnique({
+      where: { id: jobId },
+    });
+    
+    // Use type assertion to access processPids
+    const processPids = (job as Record<string, unknown> | null)?.processPids as string | null;
+    if (!processPids) return [];
+    
+    const processInfo: TrackedProcessInfo[] = JSON.parse(processPids);
+    restoreProcessTracking(processInfo);
+    console.log(`[Job ${jobId}] Loaded ${processInfo.length} persisted process PIDs`);
+    return processInfo;
+  } catch (error) {
+    console.error(`[Job ${jobId}] Failed to load persisted process PIDs:`, error);
+    return [];
+  }
+}
+
+/**
+ * Get persisted process PIDs for a job (without restoring tracking)
+ */
+export async function getPersistedProcessPids(jobId: string): Promise<TrackedProcessInfo[]> {
+  try {
+    const job = await prisma.scrapingJob.findUnique({
+      where: { id: jobId },
+    });
+    
+    // Use type assertion to access processPids
+    const processPids = (job as Record<string, unknown> | null)?.processPids as string | null;
+    if (!processPids) return [];
+    return JSON.parse(processPids);
+  } catch (error) {
+    console.error(`[Job ${jobId}] Failed to get persisted process PIDs:`, error);
+    return [];
+  }
+}
 
 // ============================================================================
 // ANALYZED BUSINESS HISTORY - Check and save to avoid re-analyzing
@@ -193,34 +281,18 @@ export async function cancelJob(jobId: string): Promise<boolean> {
   console.log(`🛑 CANCELLING JOB: ${jobId}`);
   
   try {
-    // FIRST: Trigger cancellation token - this will abort any ongoing operations
+    // STEP 1: Trigger cancellation token - this will abort any ongoing operations
+    console.log(`🛑 [Step 1] Triggering cancellation token for job: ${jobId}`);
     cancelJobToken(jobId);
-    console.log(`🛑 Cancellation token triggered for job: ${jobId}`);
     
+    // STEP 2: Signal in-memory job state if it exists
     const jobState = runningJobs.get(jobId);
-    
     if (jobState) {
-      // Signal cancellation IMMEDIATELY
       jobState.cancelled = true;
-      jobState.completed = true; // Also mark as completed to stop all loops
+      jobState.completed = true;
+      console.log(`🛑 [Step 2] In-memory cancellation flags set`);
       
-      console.log(`🛑 Cancellation flags set for job: ${jobId}`);
-      
-      // AGGRESSIVE: Kill browser processes directly by PID
-      // This is more reliable than trying to close gracefully
-      const registeredPids = getRegisteredPids();
-      console.log(`🛑 Killing ${registeredPids.length} registered browser processes...`);
-      
-      for (const pid of registeredPids) {
-        try {
-          await killProcess(pid);
-          console.log(`   ✓ Killed process ${pid}`);
-        } catch (e) {
-          console.log(`   ⚠️ Failed to kill process ${pid}:`, e);
-        }
-      }
-      
-      // Also try graceful close as backup (non-blocking, don't wait)
+      // Try graceful close (non-blocking, best effort)
       if (jobState.scraper) {
         jobState.scraper.close().catch(() => {});
       }
@@ -228,45 +300,73 @@ export async function cancelJob(jobId: string): Promise<boolean> {
         jobState.browser.close().catch(() => {});
       }
     } else {
-      // Job not in memory, but might have orphaned processes - kill all scraper processes
-      console.log(`🛑 Job ${jobId} not in memory, killing all scraper processes...`);
-      await killAllScraperProcesses();
+      console.log(`🛑 [Step 2] Job not in memory (may have been restarted)`);
     }
     
-    // Update database status
+    // STEP 3: CRITICAL - Find and kill ALL Chrome processes with this job's ID
+    // This is the most reliable method - searches ALL running Chrome processes
+    // for ones that have --job-id=<jobId> in their command line
+    console.log(`🛑 [Step 3] Finding and killing all processes for job ${jobId}...`);
+    const killResult = await findAndKillJobProcesses(jobId);
+    console.log(`🛑 [Step 3] Process cleanup: found=${killResult.found}, killed=${killResult.killed}, failed=${killResult.failed}`);
+    
+    // STEP 4: Get current job state for final update
+    const currentJob = await prisma.scrapingJob.findUnique({
+      where: { id: jobId },
+      select: { leadsFound: true },
+    });
+    
+    // STEP 5: Update database status to COMPLETED
     await prisma.scrapingJob.update({
       where: { id: jobId },
       data: {
-        status: JobStatus.CANCELLED,
+        status: JobStatus.COMPLETED,
         completedAt: new Date(),
         error: 'Job cancelled by user',
-      },
+        leadsFound: currentJob?.leadsFound ?? 0,
+        processPids: null, // Clear any persisted PIDs
+      } as Record<string, unknown>,
     });
+    console.log(`🛑 [Step 5] Database status updated to COMPLETED`);
     
-    console.log(`🛑 Job ${jobId} database status updated to CANCELLED`);
-    
-    // Clean up from running jobs
+    // STEP 6: Cleanup
     runningJobs.delete(jobId);
+    removeCancellationToken(jobId);
+    clearJobPids(jobId);
     
-    console.log(`🛑 Job ${jobId} fully cancelled and cleaned up`);
+    console.log(`🛑 Job ${jobId} cancellation complete: ${killResult.killed} processes killed`);
     return true;
+    
   } catch (error) {
-    console.error(`Failed to cancel job ${jobId}:`, error);
-    // Even if there's an error, try to mark as cancelled in DB
+    console.error(`🛑 [ERROR] Failed to cancel job ${jobId}:`, error);
+    
+    // Even on error, try to mark as completed and kill processes
     try {
+      // Still try to kill processes - this is critical
+      await findAndKillJobProcesses(jobId);
+      
       await prisma.scrapingJob.update({
         where: { id: jobId },
         data: {
-          status: JobStatus.CANCELLED,
+          status: JobStatus.COMPLETED,
           completedAt: new Date(),
           error: 'Job cancelled by user (with cleanup errors)',
-        },
+          processPids: null,
+        } as Record<string, unknown>,
       });
+      console.log(`🛑 [ERROR RECOVERY] Job marked as COMPLETED`);
+      
+      runningJobs.delete(jobId);
+      removeCancellationToken(jobId);
+      clearJobPids(jobId);
+      return true;
     } catch (dbError) {
-      console.error(`Failed to update job status in DB:`, dbError);
+      console.error(`🛑 [ERROR RECOVERY] Failed:`, dbError);
+      runningJobs.delete(jobId);
+      removeCancellationToken(jobId);
+      clearJobPids(jobId);
+      return false;
     }
-    runningJobs.delete(jobId);
-    return false;
   }
 }
 
@@ -279,6 +379,12 @@ export async function deleteJob(jobId: string): Promise<boolean> {
     const jobState = runningJobs.get(jobId);
     if (jobState) {
       await cancelJob(jobId);
+    } else {
+      // Job not in memory - still kill any processes with this job's ID
+      const killResult = await findAndKillJobProcesses(jobId);
+      if (killResult.killed > 0) {
+        console.log(`🗑️ Job ${jobId} pre-delete cleanup: killed ${killResult.killed} processes`);
+      }
     }
     
     // Delete the job from database
@@ -315,7 +421,7 @@ async function saveSmartEnrichedLead(lead: SmartEnrichedLead): Promise<boolean> 
     }
 
     // Determine status based on qualification
-    let status = LeadStatus.NEW;
+    let status: typeof LeadStatus[keyof typeof LeadStatus] = LeadStatus.NEW;
     if (lead.qualificationTier === 'A') {
       status = LeadStatus.QUALIFIED;
     }
@@ -473,24 +579,27 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     
     jobLog.info(jobId, 'Launching browser for AI enrichment...');
     
-    // Create a separate browser for AI enrichment with identifiable args
+    // Create a separate browser for AI enrichment with JOB-SPECIFIC identifiable args
+    // The --job-id=<jobId> arg allows us to find this browser even after server restart
+    const chromeArgs = getScraperChromeArgs(jobId);
+    console.log(`[Job ${jobId}] Launching browser with args: ${chromeArgs.slice(-3).join(' ')}`);
+    
     browser = await chromium.launch({
       headless: true,
-      args: getScraperChromeArgs(),
+      args: chromeArgs,
     });
     
-    // Register browser PID for tracking (handle if process() not available)
-    try {
-      if (typeof browser.process === 'function') {
-        const browserProcess = browser.process();
-        if (browserProcess?.pid) {
-          registerBrowserPid(browserProcess.pid);
-          console.log(`[Job ${jobId}] Browser launched with PID: ${browserProcess.pid}`);
-        }
-      }
-    } catch (e) {
-      console.log(`[Job ${jobId}] Could not get browser PID:`, e);
-    }
+    // Wait a moment for Chrome processes to spawn, then register them
+    // This is more reliable than trying to get PID from browser.process()
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Find and register all Chrome processes with our job ID
+    const { registerJobProcesses } = await import('./process-manager');
+    const registeredCount = await registerJobProcesses(jobId);
+    console.log(`[Job ${jobId}] Registered ${registeredCount} Chrome processes`);
+    
+    // Persist to database for crash recovery
+    await persistJobProcessPids(jobId);
     
     // Update the running job state with browser reference
     const jobState = runningJobs.get(jobId);
@@ -825,23 +934,37 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     }
 
     // Mark job as completed in database (unless it was cancelled by user)
-    // Check BOTH isJobCancelled AND cancellationToken since cancelJob removes from runningJobs
+    // Check BOTH isJobCancelled AND cancellationToken since cancelJob might have run
     const wasCancelled = isJobCancelled(jobId) || cancellationToken.isCancelled;
     if (!wasCancelled) {
-      await prisma.scrapingJob.update({
+      // Double-check the current status in DB to avoid race conditions
+      const currentJob = await prisma.scrapingJob.findUnique({
         where: { id: jobId },
-        data: {
-          status: JobStatus.COMPLETED,
-          completedAt: new Date(),
-          leadsFound,
-        },
+        select: { status: true, completedAt: true },
       });
+      
+      // Only update to COMPLETED if still RUNNING (not already completed by cancelJob)
+      if (currentJob && currentJob.status === JobStatus.RUNNING) {
+        await prisma.scrapingJob.update({
+          where: { id: jobId },
+          data: {
+            status: JobStatus.COMPLETED,
+            completedAt: new Date(),
+            leadsFound,
+          },
+        });
 
-      console.log(`\n✅ AI-Powered Job completed! Found ${leadsFound}/${job.leadsRequested} qualified lead(s)`);
-      jobLog.success(jobId, `✅ Job completed! Found ${leadsFound}/${job.leadsRequested} qualified lead(s)`);
+        console.log(`\n✅ AI-Powered Job completed! Found ${leadsFound}/${job.leadsRequested} qualified lead(s)`);
+        jobLog.success(jobId, `✅ Job completed! Found ${leadsFound}/${job.leadsRequested} qualified lead(s)`);
+      } else {
+        // Job was already completed (likely by cancelJob)
+        console.log(`\n🛑 Job ${jobId} status is already ${currentJob?.status} - not updating`);
+        jobLog.warning(jobId, `🛑 Job already ${currentJob?.status} - skipping update`);
+      }
     } else {
-      console.log(`\n🛑 Job ${jobId} was CANCELLED by user. Found ${leadsFound} leads before cancellation.`);
-      jobLog.warning(jobId, `🛑 Job was CANCELLED by user. Found ${leadsFound} leads before cancellation.`);
+      // Job was cancelled - cancelJob already set status to COMPLETED
+      console.log(`\n🛑 Job ${jobId} was cancelled by user. Found ${leadsFound} leads before cancellation.`);
+      jobLog.warning(jobId, `🛑 Job cancelled by user. Found ${leadsFound} leads before cancellation.`);
     }
 
   } catch (error) {
@@ -849,8 +972,8 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     if (error instanceof JobCancelledError || cancellationToken.isCancelled) {
       console.log(`🛑 Job ${jobId} cancelled gracefully`);
       jobLog.warning(jobId, '🛑 Job cancelled gracefully');
-      // Don't update DB - cancelJob already set status to CANCELLED
-    } else if (!isJobCancelled(jobId)) {
+      // Don't update DB - cancelJob already set status to COMPLETED
+    } else if (!isJobCancelled(jobId) && !cancellationToken.isCancelled) {
       // Don't update status if job was cancelled (already handled)
       console.error(`Job ${jobId} failed:`, error);
       jobLog.error(jobId, `❌ Job failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -862,6 +985,9 @@ export async function runScrapingJob(jobId: string): Promise<void> {
           error: error instanceof Error ? error.message : 'Unknown error',
         },
       });
+    } else {
+      // Job was cancelled - don't update DB, cancelJob already did it
+      console.log(`🛑 Job ${jobId} was cancelled - skipping status update in error handler`);
     }
   } finally {
     // Clean up resources
@@ -871,29 +997,29 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     removeCancellationToken(jobId);
     console.log(`[Job ${jobId}] Cancellation token removed`);
     
+    // First, try graceful close
     try {
       await scraper.close();
     } catch (e) {
       // Ignore close errors
     }
     if (browser) {
-      // Unregister browser PID before closing (handle if process() not available)
-      try {
-        if (typeof browser.process === 'function') {
-          const browserProcess = browser.process();
-          if (browserProcess?.pid) {
-            unregisterBrowserPid(browserProcess.pid);
-          }
-        }
-      } catch (e) {
-        console.log(`[Job ${jobId}] Could not get browser PID for unregistration:`, e);
-      }
       try {
         await browser.close();
       } catch (e) {
         // Ignore close errors
       }
     }
+    
+    // SAFE KILL: Use killJobProcesses which validates each process before killing
+    // This ensures we don't accidentally kill processes from other applications
+    const killResult = await killJobProcesses(jobId);
+    if (killResult.killed > 0 || killResult.refused > 0 || killResult.notFound > 0) {
+      console.log(`[Job ${jobId}] Process cleanup: killed=${killResult.killed}, refused=${killResult.refused}, notFound=${killResult.notFound}`);
+    }
+    
+    // Clear persisted PIDs from database
+    await clearPersistedProcessPids(jobId);
     
     // Remove from running jobs registry
     runningJobs.delete(jobId);

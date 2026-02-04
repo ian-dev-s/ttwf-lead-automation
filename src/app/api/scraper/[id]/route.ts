@@ -133,16 +133,17 @@ export async function PATCH(
       }
 
       // For SCHEDULED jobs that haven't started, just update the DB directly
+      // Mark as COMPLETED (cancelled jobs are considered complete)
       if (job.status === 'SCHEDULED') {
         await prisma.scrapingJob.update({
           where: { id: params.id },
           data: {
-            status: 'CANCELLED',
+            status: 'COMPLETED',
             completedAt: new Date(),
             error: 'Job cancelled by user before starting',
           },
         });
-        console.log(`Cancelled scheduled job: ${params.id}`);
+        console.log(`Cancelled scheduled job: ${params.id} (marked as COMPLETED)`);
         return NextResponse.json({
           success: true,
           message: 'Scheduled job cancelled',
@@ -150,16 +151,27 @@ export async function PATCH(
       }
 
       // For RUNNING jobs, use the full cancellation flow
-      const cancelled = await cancelJob(params.id);
-      
-      if (cancelled) {
-        return NextResponse.json({
-          success: true,
-          message: 'Job cancelled',
-        });
-      } else {
+      console.log(`[API] Calling cancelJob for ${params.id}...`);
+      try {
+        const cancelled = await cancelJob(params.id);
+        console.log(`[API] cancelJob returned: ${cancelled}`);
+        
+        if (cancelled) {
+          return NextResponse.json({
+            success: true,
+            message: 'Job cancelled',
+          });
+        } else {
+          console.error(`[API] cancelJob returned false for ${params.id}`);
+          return NextResponse.json(
+            { error: 'Failed to cancel job' },
+            { status: 500 }
+          );
+        }
+      } catch (cancelError) {
+        console.error(`[API] cancelJob threw error for ${params.id}:`, cancelError);
         return NextResponse.json(
-          { error: 'Failed to cancel job' },
+          { error: 'Failed to cancel job: ' + (cancelError instanceof Error ? cancelError.message : 'Unknown error') },
           { status: 500 }
         );
       }

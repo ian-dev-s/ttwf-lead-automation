@@ -6,7 +6,7 @@ import {
     JobCancelledError,
     sleepWithCancellation,
 } from './cancellation';
-import { getScraperChromeArgs, registerBrowserPid, unregisterBrowserPid } from './process-manager';
+import { getJobPids, getScraperChromeArgs, unregisterBrowserPid } from './process-manager';
 
 export interface GoogleMapsScraperConfig {
   headless?: boolean;
@@ -67,23 +67,23 @@ export class GoogleMapsScraper {
   }
 
   async initialize(): Promise<void> {
+    // Use job-specific Chrome args so processes can be identified even after restart
+    const chromeArgs = getScraperChromeArgs(this.jobId || undefined);
+    console.log(`[GoogleMapsScraper] Launching browser${this.jobId ? ` for job ${this.jobId}` : ''}...`);
+    
     this.browser = await chromium.launch({
       headless: this.config.headless,
       slowMo: this.config.slowMo,
-      args: getScraperChromeArgs(),
+      args: chromeArgs,
     });
 
-    // Register browser PID for tracking (handle if process() not available)
-    try {
-      if (typeof this.browser.process === 'function') {
-        const browserProcess = this.browser.process();
-        if (browserProcess?.pid) {
-          registerBrowserPid(browserProcess.pid);
-          console.log(`[GoogleMapsScraper] Browser launched with PID: ${browserProcess.pid}`);
-        }
-      }
-    } catch (e) {
-      console.log('[GoogleMapsScraper] Could not get browser PID:', e);
+    // Wait for Chrome processes to spawn, then register them
+    // Using job ID in args means we can find these processes even after server restart
+    if (this.jobId) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const { registerJobProcesses } = await import('./process-manager');
+      const registeredCount = await registerJobProcesses(this.jobId);
+      console.log(`[GoogleMapsScraper] Registered ${registeredCount} Chrome processes for job ${this.jobId}`);
     }
 
     const context = await this.browser.newContext({
@@ -103,18 +103,20 @@ export class GoogleMapsScraper {
 
   async close(): Promise<void> {
     if (this.browser) {
-      // Unregister browser PID before closing (handle if process() not available)
-      try {
-        if (typeof this.browser.process === 'function') {
-          const browserProcess = this.browser.process();
-          if (browserProcess?.pid) {
-            unregisterBrowserPid(browserProcess.pid);
-          }
+      // Unregister all PIDs tracked for this job
+      if (this.jobId) {
+        const jobPids = getJobPids(this.jobId);
+        for (const pid of jobPids) {
+          unregisterBrowserPid(pid, this.jobId);
         }
-      } catch (e) {
-        console.log('[GoogleMapsScraper] Could not get browser PID for unregistration:', e);
+        console.log(`[GoogleMapsScraper] Unregistered ${jobPids.length} PIDs for job ${this.jobId}`);
       }
-      await this.browser.close();
+      
+      try {
+        await this.browser.close();
+      } catch (e) {
+        // Ignore close errors (browser might already be closed)
+      }
       this.browser = null;
       this.page = null;
     }

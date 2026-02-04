@@ -29,16 +29,21 @@ export function ProcessManager({ hasActiveJob = false }: ProcessManagerProps) {
   const [killing, setKilling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [hadActiveJobRecently, setHadActiveJobRecently] = useState(false);
   const lastFetchRef = useRef<number>(0);
+  const recentlyActiveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const fetchStatus = useCallback(async (force: boolean = false) => {
-    // Throttle requests - don't fetch more than once every 5 seconds unless forced
+  const fetchStatus = useCallback(async (force: boolean = false, showLoading: boolean = true) => {
+    // Throttle requests - don't fetch more than once every 3 seconds unless forced
     const now = Date.now();
-    if (!force && now - lastFetchRef.current < 5000) {
+    if (!force && now - lastFetchRef.current < 3000) {
       return;
     }
     
-    setLoading(true);
+    // Only show loading indicator on manual refresh (showLoading = true)
+    if (showLoading) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const res = await fetch('/api/scraper/processes');
@@ -49,7 +54,9 @@ export function ProcessManager({ hasActiveJob = false }: ProcessManagerProps) {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch process status');
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -85,21 +92,46 @@ export function ProcessManager({ hasActiveJob = false }: ProcessManagerProps) {
     }
   };
 
+  // Track if we had an active job recently (to continue refreshing after job ends)
   useEffect(() => {
-    // Only fetch on mount if expanded
+    if (hasActiveJob) {
+      setHadActiveJobRecently(true);
+      // Clear any existing timeout
+      if (recentlyActiveTimeoutRef.current) {
+        clearTimeout(recentlyActiveTimeoutRef.current);
+        recentlyActiveTimeoutRef.current = null;
+      }
+    } else if (hadActiveJobRecently) {
+      // Job just ended - continue refreshing for 15 more seconds to catch cleanup
+      recentlyActiveTimeoutRef.current = setTimeout(() => {
+        setHadActiveJobRecently(false);
+      }, 15000);
+    }
+    
+    return () => {
+      if (recentlyActiveTimeoutRef.current) {
+        clearTimeout(recentlyActiveTimeoutRef.current);
+      }
+    };
+  }, [hasActiveJob, hadActiveJobRecently]);
+
+  useEffect(() => {
+    // Fetch on mount if expanded
     if (isExpanded) {
       fetchStatus(true);
     }
   }, [isExpanded, fetchStatus]);
 
   useEffect(() => {
-    // Only auto-refresh if expanded AND there's an active job
-    // Use a longer interval (30 seconds) to reduce API calls
-    if (!isExpanded || !hasActiveJob) return;
+    // Auto-refresh when expanded AND (there's an active job OR we had one recently)
+    const shouldRefresh = isExpanded && (hasActiveJob || hadActiveJobRecently);
+    if (!shouldRefresh) return;
     
-    const interval = setInterval(() => fetchStatus(), 30000);
+    // Use faster interval (5 seconds) when actively monitoring
+    // Pass showLoading=false to do background refresh without UI flicker
+    const interval = setInterval(() => fetchStatus(false, false), 5000);
     return () => clearInterval(interval);
-  }, [isExpanded, hasActiveJob, fetchStatus]);
+  }, [isExpanded, hasActiveJob, hadActiveJobRecently, fetchStatus]);
 
   return (
     <Card className="p-4">
