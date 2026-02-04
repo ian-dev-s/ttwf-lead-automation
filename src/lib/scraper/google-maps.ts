@@ -1,6 +1,12 @@
 import { ScrapedBusiness, ScrapingParams } from '@/types';
 import { Browser, chromium, Page } from 'playwright';
-import { sleep } from '../utils';
+import {
+    CancellationToken,
+    getCancellationToken,
+    JobCancelledError,
+    sleepWithCancellation,
+} from './cancellation';
+import { getScraperChromeArgs, registerBrowserPid, unregisterBrowserPid } from './process-manager';
 
 export interface GoogleMapsScraperConfig {
   headless?: boolean;
@@ -22,16 +28,63 @@ export class GoogleMapsScraper {
   private browser: Browser | null = null;
   private page: Page | null = null;
   private config: GoogleMapsScraperConfig;
+  private jobId: string | null = null;
 
   constructor(config: Partial<GoogleMapsScraperConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  /**
+   * Set the job ID for cancellation support
+   */
+  setJobId(jobId: string): void {
+    this.jobId = jobId;
+  }
+
+  /**
+   * Get cancellation token for this scraper's job
+   */
+  private getCancellationToken(): CancellationToken | undefined {
+    return this.jobId ? getCancellationToken(this.jobId) : undefined;
+  }
+
+  /**
+   * Check if the job has been cancelled
+   */
+  private isCancelled(): boolean {
+    const token = this.getCancellationToken();
+    return token?.isCancelled ?? false;
+  }
+
+  /**
+   * Throw if cancelled
+   */
+  private throwIfCancelled(): void {
+    const token = this.getCancellationToken();
+    if (token?.isCancelled) {
+      throw new JobCancelledError(this.jobId || 'unknown');
+    }
   }
 
   async initialize(): Promise<void> {
     this.browser = await chromium.launch({
       headless: this.config.headless,
       slowMo: this.config.slowMo,
+      args: getScraperChromeArgs(),
     });
+
+    // Register browser PID for tracking (handle if process() not available)
+    try {
+      if (typeof this.browser.process === 'function') {
+        const browserProcess = this.browser.process();
+        if (browserProcess?.pid) {
+          registerBrowserPid(browserProcess.pid);
+          console.log(`[GoogleMapsScraper] Browser launched with PID: ${browserProcess.pid}`);
+        }
+      }
+    } catch (e) {
+      console.log('[GoogleMapsScraper] Could not get browser PID:', e);
+    }
 
     const context = await this.browser.newContext({
       viewport: { width: 1920, height: 1080 },
@@ -50,6 +103,17 @@ export class GoogleMapsScraper {
 
   async close(): Promise<void> {
     if (this.browser) {
+      // Unregister browser PID before closing (handle if process() not available)
+      try {
+        if (typeof this.browser.process === 'function') {
+          const browserProcess = this.browser.process();
+          if (browserProcess?.pid) {
+            unregisterBrowserPid(browserProcess.pid);
+          }
+        }
+      } catch (e) {
+        console.log('[GoogleMapsScraper] Could not get browser PID for unregistration:', e);
+      }
       await this.browser.close();
       this.browser = null;
       this.page = null;
@@ -57,6 +121,9 @@ export class GoogleMapsScraper {
   }
 
   async searchBusinesses(params: ScrapingParams): Promise<ScrapedBusiness[]> {
+    // Check cancellation immediately
+    this.throwIfCancelled();
+    
     if (!this.page) {
       throw new Error('Scraper not initialized. Call initialize() first.');
     }
@@ -64,25 +131,34 @@ export class GoogleMapsScraper {
     const results: ScrapedBusiness[] = [];
     const searchQuery = `${params.query} ${params.location}`;
     const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(searchQuery)}`;
+    const cancellationToken = this.getCancellationToken();
 
     try {
       console.log(`Navigating to: ${searchUrl}`);
       // Use domcontentloaded instead of networkidle to avoid timeout
       await this.page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      
+      // Check cancellation after navigation
+      this.throwIfCancelled();
 
-      // Wait for results to load (reduced from 2000ms)
-      await sleep(1000);
+      // Wait for results to load (with cancellation support)
+      await sleepWithCancellation(1000, cancellationToken);
 
       // Accept cookies if prompted
       try {
         const acceptButton = this.page.locator('button:has-text("Accept all")');
         if (await acceptButton.isVisible({ timeout: 2000 })) {
           await acceptButton.click();
-          await sleep(500);
+          await sleepWithCancellation(500, cancellationToken);
         }
-      } catch {
+      } catch (e) {
+        // Check if it was a cancellation
+        if (e instanceof JobCancelledError) throw e;
         // No cookie prompt, continue
       }
+      
+      // Check cancellation before waiting for feed
+      this.throwIfCancelled();
 
       // Wait for the results feed
       const feedFound = await this.page.waitForSelector('[role="feed"]', { timeout: 10000 }).catch(() => null);
@@ -90,32 +166,49 @@ export class GoogleMapsScraper {
         console.log('Results feed not found');
         return results;
       }
+      
+      // Check cancellation before scrolling
+      this.throwIfCancelled();
 
-      // Scroll to load more results
+      // Scroll to load more results (with cancellation checks)
       const maxScrolls = Math.ceil((params.maxResults || this.config.maxResults!) / 5);
       for (let i = 0; i < maxScrolls; i++) {
+        this.throwIfCancelled(); // Check before each scroll
         await this.scrollResultsList();
-        await sleep(500);
+        await sleepWithCancellation(500, cancellationToken);
       }
+      
+      // Check cancellation before extracting listings
+      this.throwIfCancelled();
 
       // Extract business listings - use the same selector as the working scraper
       const listings = await this.page.locator('a[href*="/maps/place"]').all();
       console.log(`Found ${listings.length} listings`);
 
       for (const listing of listings.slice(0, params.maxResults || this.config.maxResults)) {
+        // Check cancellation at start of each listing
+        this.throwIfCancelled();
+        
         try {
           const business = await this.extractBusinessDetails(listing);
           if (business && this.isValidBusiness(business, params.minRating)) {
             results.push(business);
           }
 
-          // Rate limiting
-          await sleep(this.config.delayBetweenRequests!);
+          // Rate limiting (with cancellation support)
+          await sleepWithCancellation(this.config.delayBetweenRequests!, cancellationToken);
         } catch (error) {
+          // Check if it's a cancellation error
+          if (error instanceof JobCancelledError) throw error;
           console.error('Error extracting business details:', error);
         }
       }
     } catch (error: unknown) {
+      // Re-throw cancellation errors
+      if (error instanceof JobCancelledError) {
+        throw error;
+      }
+      
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error('Error searching businesses:', error);
       
@@ -143,6 +236,11 @@ export class GoogleMapsScraper {
   }
 
   private async extractBusinessDetails(listing: any): Promise<ScrapedBusiness | null> {
+    // Check cancellation immediately
+    this.throwIfCancelled();
+    
+    const cancellationToken = this.getCancellationToken();
+    
     try {
       // First check if this is a sponsored listing by checking the aria-label
       const ariaLabel = await listing.getAttribute('aria-label').catch(() => '');
@@ -153,14 +251,18 @@ export class GoogleMapsScraper {
 
       // Click to open details
       await listing.click().catch(() => {});
-      await sleep(1500); // Reduced from 2500ms
+      await sleepWithCancellation(1500, cancellationToken); // With cancellation support
 
       if (!this.page) return null;
+      
+      // Check cancellation after click
+      this.throwIfCancelled();
 
       // Wait for the URL to change to include /place/
       let attempts = 0;
       while (!this.page.url().includes('/place/') && attempts < 5) {
-        await sleep(500);
+        this.throwIfCancelled(); // Check during wait loop
+        await sleepWithCancellation(500, cancellationToken);
         attempts++;
       }
 

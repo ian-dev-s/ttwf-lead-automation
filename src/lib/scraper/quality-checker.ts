@@ -9,9 +9,15 @@
  * OPTIMIZATIONS:
  * - In-memory cache for PageSpeed results (avoids duplicate API calls)
  * - Reduced delays between API calls
+ * - Cancellation support for immediate job stopping
  */
 
-import { sleep } from '../utils';
+import { 
+  CancellationToken, 
+  JobCancelledError, 
+  sleepWithCancellation,
+  fetchWithCancellation,
+} from './cancellation';
 
 // PageSpeed API configuration
 const PAGESPEED_API_KEY = process.env.PAGESPEED_API_KEY || 'AIzaSyDdQdInPDoaUWtS0BmVIs-JY4zCmiEazOk';
@@ -137,11 +143,17 @@ export function calculateWebsiteScore(
  * Analyze website quality using Google PageSpeed Insights API
  * Includes retry logic with exponential backoff
  * OPTIMIZED: Uses caching to avoid duplicate API calls
+ * SUPPORTS: Cancellation for immediate job stopping
  */
 export async function analyzeWebsiteQuality(
   websiteUrl: string,
-  workerId: number = 1
+  workerId: number = 1,
+  cancellationToken?: CancellationToken
 ): Promise<WebsiteQualityResult> {
+  // Check cancellation immediately
+  if (cancellationToken?.isCancelled) {
+    throw new JobCancelledError(cancellationToken.id);
+  }
   // Ensure URL has protocol
   let url = websiteUrl;
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -171,23 +183,32 @@ export async function analyzeWebsiteQuality(
   let lastError: string = '';
   
   for (let attempt = 1; attempt <= PAGESPEED_MAX_RETRIES; attempt++) {
+    // Check cancellation at start of each retry
+    if (cancellationToken?.isCancelled) {
+      console.log(`   [Worker ${workerId}] 🛑 Cancelled - aborting PageSpeed analysis`);
+      throw new JobCancelledError(cancellationToken.id);
+    }
+    
     try {
       console.log(`   [Worker ${workerId}] 🔍 PageSpeed API call (attempt ${attempt}/${PAGESPEED_MAX_RETRIES}): ${url}`);
       
-      // Add delay between API calls
+      // Add delay between API calls (with cancellation support)
       if (attempt > 1) {
         const backoffMs = PAGESPEED_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 2);
         console.log(`   [Worker ${workerId}] ⏳ Waiting ${Math.round(backoffMs / 1000)}s before retry...`);
-        await sleep(backoffMs);
+        await sleepWithCancellation(backoffMs, cancellationToken);
       } else {
-        await sleep(DELAY_BETWEEN_API_CALLS);
+        await sleepWithCancellation(DELAY_BETWEEN_API_CALLS, cancellationToken);
       }
       
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 60000);
+      // Check cancellation before making API call
+      if (cancellationToken?.isCancelled) {
+        throw new JobCancelledError(cancellationToken.id);
+      }
       
-      const response = await fetch(apiUrl, { signal: controller.signal });
-      clearTimeout(timeout);
+      const response = await fetchWithCancellation(apiUrl, { 
+        signal: AbortSignal.timeout(60000) 
+      }, cancellationToken);
       
       if (response.status === 429) {
         lastError = 'Rate limited (429)';
@@ -273,11 +294,17 @@ export async function analyzeWebsiteQuality(
 
 /**
  * Full prospect check - determines if a business is a good prospect based on their website
+ * SUPPORTS: Cancellation for immediate job stopping
  */
 export async function checkIfGoodProspect(
   website: string | undefined,
-  workerId: number = 1
+  workerId: number = 1,
+  cancellationToken?: CancellationToken
 ): Promise<ProspectCheckResult> {
+  // Check cancellation immediately
+  if (cancellationToken?.isCancelled) {
+    throw new JobCancelledError(cancellationToken.id);
+  }
   // No website = perfect prospect
   if (!website) {
     console.log(`   [Worker ${workerId}] ✅ No website - PERFECT prospect`);
@@ -298,7 +325,13 @@ export async function checkIfGoodProspect(
   
   // Has a proper domain - analyze using Google PageSpeed Insights API
   console.log(`   [Worker ${workerId}] 🔍 Analyzing website quality: ${website}`);
-  const qualityResult = await analyzeWebsiteQuality(website, workerId);
+  
+  // Check cancellation before expensive API call
+  if (cancellationToken?.isCancelled) {
+    throw new JobCancelledError(cancellationToken.id);
+  }
+  
+  const qualityResult = await analyzeWebsiteQuality(website, workerId, cancellationToken);
   
   // If API had an error, be conservative and consider it a potential prospect
   if (qualityResult.error) {

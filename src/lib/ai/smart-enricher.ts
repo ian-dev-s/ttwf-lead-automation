@@ -20,7 +20,11 @@ import { analyzeBusinessWithAI, BusinessAnalysis, BusinessData } from './busines
 import { extractAndMergeData, ExtractedContactInfo, ExtractedBusinessInfo } from './data-extractor';
 import { qualifyLeadWithAI, LeadQualification, LeadQualificationInput } from './lead-qualifier';
 import { crossReferenceWithAI, DataSource, ValidationResult } from './cross-reference';
-import { sleep } from '../utils';
+import { 
+  CancellationToken, 
+  JobCancelledError, 
+  sleepWithCancellation 
+} from '../scraper/cancellation';
 
 // Reduced delays for faster scraping
 const FAST_DELAY = 500; // 500ms instead of 2000ms
@@ -94,14 +98,21 @@ export interface SmartEnrichedLead {
 /**
  * Smart enrich a lead using AI across multiple sources
  * OPTIMIZED: Uses parallel scraping and parallel AI calls
+ * SUPPORTS: Cancellation for immediate job stopping
  */
 export async function smartEnrichLead(
   browser: Browser,
   business: ScrapedBusinessInput,
   location: string,
   industry: string,
-  workerId: number = 1
+  workerId: number = 1,
+  cancellationToken?: CancellationToken
 ): Promise<SmartEnrichedLead> {
+  // Check cancellation immediately
+  if (cancellationToken?.isCancelled) {
+    throw new JobCancelledError(cancellationToken.id);
+  }
+  
   console.log(`\n   [Worker ${workerId}] 🧠 Starting FAST AI enrichment for: ${business.name}`);
   const startTime = Date.now();
   
@@ -122,6 +133,11 @@ export async function smartEnrichLead(
   
   let facebookUrl: string | null = null;
   
+  // Check cancellation before creating pages
+  if (cancellationToken?.isCancelled) {
+    throw new JobCancelledError(cancellationToken.id);
+  }
+  
   // OPTIMIZATION: Create multiple pages for parallel scraping
   const [websitePage, searchPage] = await Promise.all([
     browser.newPage(),
@@ -129,17 +145,27 @@ export async function smartEnrichLead(
   ]);
   
   try {
+    // Check cancellation after page creation
+    if (cancellationToken?.isCancelled) {
+      throw new JobCancelledError(cancellationToken.id);
+    }
+    
     // OPTIMIZATION: Scrape website AND Google Search IN PARALLEL
     console.log(`   [Worker ${workerId}] ⚡ Parallel scraping: website + Google Search`);
     
     const [websiteData, searchData] = await Promise.all([
       // Scrape website if available
       business.website 
-        ? scrapeWebsiteWithAI(websitePage, business.website, business.name)
+        ? scrapeWebsiteWithAI(websitePage, business.website, business.name, cancellationToken)
         : Promise.resolve(null),
       // Search Google for additional information
-      searchGoogleWithAI(searchPage, business.name, location),
+      searchGoogleWithAI(searchPage, business.name, location, cancellationToken),
     ]);
+    
+    // Check cancellation after scraping
+    if (cancellationToken?.isCancelled) {
+      throw new JobCancelledError(cancellationToken.id);
+    }
     
     if (websiteData) {
       dataSources.push(websiteData.dataSource);
@@ -157,15 +183,20 @@ export async function smartEnrichLead(
     
     // Check Facebook if found in search results (reuse searchPage)
     facebookUrl = findFacebookUrl(searchData?.text || '', business.name);
-    if (facebookUrl) {
+    if (facebookUrl && !cancellationToken?.isCancelled) {
       console.log(`   [Worker ${workerId}] 📘 Found Facebook: ${facebookUrl}`);
-      const fbData = await scrapeFacebookWithAI(searchPage, facebookUrl, business.name);
+      const fbData = await scrapeFacebookWithAI(searchPage, facebookUrl, business.name, cancellationToken);
       if (fbData) {
         dataSources.push(fbData.dataSource);
         if (fbData.text) {
           textSources.push({ source: 'facebook', text: fbData.text });
         }
       }
+    }
+    
+    // Check cancellation before AI processing
+    if (cancellationToken?.isCancelled) {
+      throw new JobCancelledError(cancellationToken.id);
     }
     
   } finally {
@@ -176,12 +207,22 @@ export async function smartEnrichLead(
     ]);
   }
   
+  // Check cancellation before AI processing
+  if (cancellationToken?.isCancelled) {
+    throw new JobCancelledError(cancellationToken.id);
+  }
+  
   // OPTIMIZATION: Run AI extraction and cross-reference IN PARALLEL
   console.log(`   [Worker ${workerId}] ⚡ Parallel AI: extraction + cross-reference`);
   const [extractedData, validation] = await Promise.all([
     extractAndMergeData(textSources, business.name),
     crossReferenceWithAI(dataSources, business.name),
   ]);
+  
+  // Check cancellation after AI extraction
+  if (cancellationToken?.isCancelled) {
+    throw new JobCancelledError(cancellationToken.id);
+  }
   
   // Prepare business data for analysis
   const businessData: BusinessData = {
@@ -200,9 +241,19 @@ export async function smartEnrichLead(
     rawSearchResults: textSources.find(s => s.source === 'google_search')?.text,
   };
   
+  // Check cancellation before business analysis
+  if (cancellationToken?.isCancelled) {
+    throw new JobCancelledError(cancellationToken.id);
+  }
+  
   // OPTIMIZATION: Run business analysis (needed for qualification input)
   console.log(`   [Worker ${workerId}] 📊 AI analyzing business...`);
   const analysis = await analyzeBusinessWithAI(businessData);
+  
+  // Check cancellation after analysis
+  if (cancellationToken?.isCancelled) {
+    throw new JobCancelledError(cancellationToken.id);
+  }
   
   // Now qualify the lead (depends on analysis)
   console.log(`   [Worker ${workerId}] 🎯 AI qualifying lead...`);
@@ -249,15 +300,28 @@ export async function smartEnrichLead(
 /**
  * Scrape website content for AI analysis
  * OPTIMIZED: Reduced timeout and delay
+ * SUPPORTS: Cancellation for immediate job stopping
  */
 async function scrapeWebsiteWithAI(
   page: Page,
   url: string,
-  businessName: string
+  businessName: string,
+  cancellationToken?: CancellationToken
 ): Promise<{ dataSource: DataSource; text: string } | null> {
+  // Check cancellation immediately
+  if (cancellationToken?.isCancelled) {
+    return null;
+  }
+  
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 });
-    await sleep(FAST_DELAY);
+    
+    // Check cancellation after navigation
+    if (cancellationToken?.isCancelled) {
+      return null;
+    }
+    
+    await sleepWithCancellation(FAST_DELAY, cancellationToken);
     
     // Extract text content
     const text = await page.evaluate(() => {
@@ -335,18 +399,31 @@ async function scrapeWebsiteWithAI(
 /**
  * Search Google for business information
  * OPTIMIZED: Reduced timeout and delay
+ * SUPPORTS: Cancellation for immediate job stopping
  */
 async function searchGoogleWithAI(
   page: Page,
   businessName: string,
-  location: string
+  location: string,
+  cancellationToken?: CancellationToken
 ): Promise<{ dataSource: DataSource; text: string } | null> {
+  // Check cancellation immediately
+  if (cancellationToken?.isCancelled) {
+    return null;
+  }
+  
   try {
     const query = `"${businessName}" ${location} contact`;
     const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
     
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
-    await sleep(FAST_DELAY);
+    
+    // Check cancellation after navigation
+    if (cancellationToken?.isCancelled) {
+      return null;
+    }
+    
+    await sleepWithCancellation(FAST_DELAY, cancellationToken);
     
     // Extract search results text
     const text = await page.evaluate(() => {
@@ -402,15 +479,28 @@ async function searchGoogleWithAI(
 /**
  * Scrape Facebook page for business information
  * OPTIMIZED: Reduced timeout and delay
+ * SUPPORTS: Cancellation for immediate job stopping
  */
 async function scrapeFacebookWithAI(
   page: Page,
   url: string,
-  businessName: string
+  businessName: string,
+  cancellationToken?: CancellationToken
 ): Promise<{ dataSource: DataSource; text: string } | null> {
+  // Check cancellation immediately
+  if (cancellationToken?.isCancelled) {
+    return null;
+  }
+  
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 });
-    await sleep(FAST_DELAY);
+    
+    // Check cancellation after navigation
+    if (cancellationToken?.isCancelled) {
+      return null;
+    }
+    
+    await sleepWithCancellation(FAST_DELAY, cancellationToken);
     
     // Extract page content
     const data = await page.evaluate(() => {

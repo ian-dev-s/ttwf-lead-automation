@@ -2,6 +2,7 @@
 
 import { Header } from '@/components/layout/Header';
 import { JobLogViewer } from '@/components/scraper/JobLogViewer';
+import { ProcessManager } from '@/components/scraper/ProcessManager';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -53,12 +54,16 @@ export default function ScraperPage() {
     fetchJobs();
   }, []);
   
-  // Auto-refresh jobs list every 5 seconds when there are running jobs
+  // Auto-refresh jobs list when there are running/scheduled jobs
+  // Uses faster polling (3s) for running jobs, slower (10s) for scheduled
   useEffect(() => {
-    const hasRunningJobs = jobs.some(job => job.status === 'RUNNING' || job.status === 'SCHEDULED');
-    if (!hasRunningJobs) return;
+    const hasRunningJobs = jobs.some(job => job.status === 'RUNNING');
+    const hasScheduledJobs = jobs.some(job => job.status === 'SCHEDULED');
     
-    const interval = setInterval(fetchJobs, 5000);
+    if (!hasRunningJobs && !hasScheduledJobs) return;
+    
+    // Use faster polling when jobs are actively running
+    const interval = setInterval(fetchJobs, hasRunningJobs ? 3000 : 10000);
     return () => clearInterval(interval);
   }, [jobs]);
 
@@ -114,7 +119,12 @@ export default function ScraperPage() {
 
       if (!response.ok) throw new Error('Failed to stop job');
 
+      // Refresh immediately
       await fetchJobs();
+      
+      // Refresh again after a short delay to catch any async status updates
+      setTimeout(() => fetchJobs(), 1000);
+      setTimeout(() => fetchJobs(), 3000);
     } catch (error) {
       console.error('Error stopping job:', error);
     } finally {
@@ -411,6 +421,9 @@ export default function ScraperPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* Process Manager */}
+        <ProcessManager hasActiveJob={jobs.some(job => job.status === 'RUNNING')} />
       </div>
 
       {/* Job Log Viewer Modal */}

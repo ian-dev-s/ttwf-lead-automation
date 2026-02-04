@@ -4,10 +4,29 @@ import { generatePersonalizedMessage } from '../ai/personalize';
 import { SmartEnrichedLead, smartEnrichLead } from '../ai/smart-enricher';
 import { SA_CITIES, TARGET_CATEGORIES } from '../constants';
 import { prisma } from '../db';
-import { sleep } from '../utils';
+import {
+    JobCancelledError,
+    cancelJobToken,
+    createCancellationToken,
+    removeCancellationToken,
+    sleepWithCancellation
+} from './cancellation';
 import { createGoogleMapsScraper } from './google-maps';
 import { clearJobLogs, initJobLogs, jobLog } from './job-logger';
+import {
+    getProcessStatus,
+    getScraperChromeArgs,
+    killAllScraperProcesses,
+    processManager,
+    registerBrowserPid,
+    unregisterBrowserPid,
+} from './process-manager';
 import { checkIfGoodProspect, quickQualityCheck } from './quality-checker';
+
+// Re-export process manager functions for external use
+export {
+    getProcessStatus, killAllScraperProcesses, processManager
+};
 
 // ============================================================================
 // ANALYZED BUSINESS HISTORY - Check and save to avoid re-analyzing
@@ -172,6 +191,10 @@ export async function cancelJob(jobId: string): Promise<boolean> {
   console.log(`🛑 CANCELLING JOB: ${jobId}`);
   
   try {
+    // FIRST: Trigger cancellation token - this will abort any ongoing operations
+    cancelJobToken(jobId);
+    console.log(`🛑 Cancellation token triggered for job: ${jobId}`);
+    
     const jobState = runningJobs.get(jobId);
     
     if (jobState) {
@@ -395,6 +418,10 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     throw new Error(`Job ${jobId} not found`);
   }
 
+  // Create cancellation token for this job - allows immediate cancellation at any point
+  const cancellationToken = createCancellationToken(jobId);
+  console.log(`[Job ${jobId}] Cancellation token created`);
+
   // Update job status to running
   await prisma.scrapingJob.update({
     where: { id: jobId },
@@ -410,6 +437,9 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     delayBetweenRequests: parseInt(process.env.SCRAPE_DELAY_MS || '500'),
     maxResults: job.leadsRequested,
   });
+  
+  // Set job ID on scraper so it can use the cancellation token
+  scraper.setJobId(jobId);
 
   let leadsFound = 0;
   let browser: Browser | null = null;
@@ -434,11 +464,24 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     
     jobLog.info(jobId, 'Launching browser for AI enrichment...');
     
-    // Create a separate browser for AI enrichment
+    // Create a separate browser for AI enrichment with identifiable args
     browser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: getScraperChromeArgs(),
     });
+    
+    // Register browser PID for tracking (handle if process() not available)
+    try {
+      if (typeof browser.process === 'function') {
+        const browserProcess = browser.process();
+        if (browserProcess?.pid) {
+          registerBrowserPid(browserProcess.pid);
+          console.log(`[Job ${jobId}] Browser launched with PID: ${browserProcess.pid}`);
+        }
+      }
+    } catch (e) {
+      console.log(`[Job ${jobId}] Could not get browser PID:`, e);
+    }
     
     // Update the running job state with browser reference
     const jobState = runningJobs.get(jobId);
@@ -469,16 +512,16 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     // Iterate through categories and locations
     categoryLoop:
     for (const category of categories) {
-      // Check if we should stop (cancelled OR target reached)
-      if (shouldJobStop(jobId)) {
+      // Check if we should stop (cancelled OR target reached) - use BOTH token and job state
+      if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
         console.log(`🛑 Job ${jobId} stopping at category loop`);
         jobLog.warning(jobId, 'Stopping job (cancelled or target reached)');
         break categoryLoop;
       }
 
       for (const location of locations) {
-        // Check if we should stop (cancelled OR target reached)
-        if (shouldJobStop(jobId)) {
+        // Check if we should stop (cancelled OR target reached) - use BOTH token and job state
+        if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
           console.log(`🛑 Job ${jobId} stopping at location loop`);
           jobLog.warning(jobId, 'Stopping job (cancelled or target reached)');
           break categoryLoop;
@@ -496,20 +539,26 @@ export async function runScrapingJob(jobId: string): Promise<void> {
             maxResults: Math.min(3, job.leadsRequested - leadsFound),
           });
           
-          // Check IMMEDIATELY after expensive async operation
-          if (shouldJobStop(jobId)) {
+          // Check IMMEDIATELY after expensive async operation - use BOTH token and job state
+          if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
             console.log(`🛑 Job ${jobId} cancelled during search - stopping immediately`);
             jobLog.warning(jobId, '🛑 Job cancelled during search');
             break categoryLoop;
           }
           
+          // Skip processing if no businesses found or job should stop
+          if (!businesses || businesses.length === 0) {
+            continue;
+          }
+          
           jobLog.info(jobId, `Found ${businesses.length} potential businesses`);
 
           for (const business of businesses) {
-            // Check if we should stop (cancelled OR target reached)
-            if (shouldJobStop(jobId)) {
-              console.log(`🛑 Job ${jobId} stopping at business loop`);
-              jobLog.warning(jobId, 'Stopping job (cancelled or target reached)');
+            // CRITICAL: Check cancellation at the VERY START of each business iteration
+            // This prevents processing results that came back after cancellation was triggered
+            if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
+              console.log(`🛑 Job ${jobId} stopping - cancellation detected before processing ${business.name}`);
+              jobLog.warning(jobId, '🛑 Job cancelled - stopping before processing next business');
               break categoryLoop;
             }
 
@@ -522,8 +571,8 @@ export async function runScrapingJob(jobId: string): Promise<void> {
               location
             );
             
-            // Check for cancellation after DB lookup
-            if (shouldJobStop(jobId)) {
+            // Check for cancellation after DB lookup - use BOTH token and job state
+            if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
               console.log(`🛑 Job ${jobId} cancelled - stopping`);
               break categoryLoop;
             }
@@ -583,10 +632,12 @@ export async function runScrapingJob(jobId: string): Promise<void> {
               // Step 2: Has proper domain - do full PageSpeed API analysis
               console.log(`   🔍 Checking website quality for: ${business.name}`);
               jobLog.progress(jobId, `🔍 Analyzing website quality: ${business.website}`);
-              const prospectCheck = await checkIfGoodProspect(business.website, 1);
               
-              // Check IMMEDIATELY after expensive API call
-              if (shouldJobStop(jobId)) {
+              // Pass cancellation token for immediate cancellation support
+              const prospectCheck = await checkIfGoodProspect(business.website, 1, cancellationToken);
+              
+              // Check IMMEDIATELY after expensive API call (redundant but safe)
+              if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
                 console.log(`🛑 Job ${jobId} cancelled during quality check - stopping`);
                 jobLog.warning(jobId, '🛑 Job cancelled during quality check');
                 break categoryLoop;
@@ -624,7 +675,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
             jobLog.progress(jobId, `🧠 Starting AI Enrichment for: ${business.name}`);
 
             try {
-              // Use AI-powered smart enrichment
+              // Use AI-powered smart enrichment with cancellation support
               const enrichedLead = await smartEnrichLead(
                 browser,
                 {
@@ -639,11 +690,12 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                 },
                 location,
                 category,
-                1 // workerId
+                1, // workerId
+                cancellationToken // Pass cancellation token for immediate stopping
               );
 
-              // Check IMMEDIATELY after expensive AI enrichment
-              if (shouldJobStop(jobId)) {
+              // Check IMMEDIATELY after expensive AI enrichment (redundant but safe)
+              if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
                 console.log(`🛑 Job ${jobId} cancelled during AI enrichment - stopping`);
                 jobLog.warning(jobId, '🛑 Job cancelled during AI enrichment');
                 break categoryLoop;
@@ -718,15 +770,36 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                 }
               }
             } catch (enrichError) {
+              // Check if it's a cancellation - break immediately
+              if (enrichError instanceof JobCancelledError || cancellationToken.isCancelled) {
+                console.log(`🛑 Job ${jobId} cancelled during AI enrichment - stopping immediately`);
+                jobLog.warning(jobId, '🛑 Job cancelled during AI enrichment');
+                break categoryLoop;
+              }
+              
               console.error(`   ⚠️  AI enrichment failed for ${business.name}:`, enrichError);
               jobLog.error(jobId, `⚠️ AI enrichment failed for ${business.name}: ${enrichError instanceof Error ? enrichError.message : 'Unknown error'}`);
               // Continue to next business
             }
 
-            // OPTIMIZED: Reduced delay between leads (was 3000ms)
-            await sleep(1000);
+            // OPTIMIZED: Reduced delay between leads (was 3000ms) with cancellation support
+            try {
+              await sleepWithCancellation(1000, cancellationToken);
+            } catch (sleepError) {
+              if (sleepError instanceof JobCancelledError || cancellationToken.isCancelled) {
+                console.log(`🛑 Job ${jobId} cancelled during delay - stopping immediately`);
+                break categoryLoop;
+              }
+            }
           }
         } catch (error) {
+          // Check for cancellation errors first
+          if (error instanceof JobCancelledError || cancellationToken.isCancelled) {
+            console.log(`🛑 Job ${jobId} cancelled - stopping immediately`);
+            jobLog.warning(jobId, '🛑 Job cancelled - stopping immediately');
+            break categoryLoop;
+          }
+          
           const errorMessage = error instanceof Error ? error.message : String(error);
           
           // If browser was closed (cancelled), break out immediately
@@ -761,8 +834,13 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     }
 
   } catch (error) {
-    // Don't update status if job was cancelled (already handled)
-    if (!isJobCancelled(jobId)) {
+    // Handle cancellation errors gracefully
+    if (error instanceof JobCancelledError || cancellationToken.isCancelled) {
+      console.log(`🛑 Job ${jobId} cancelled gracefully`);
+      jobLog.warning(jobId, '🛑 Job cancelled gracefully');
+      // Don't update DB - cancelJob already set status to CANCELLED
+    } else if (!isJobCancelled(jobId)) {
+      // Don't update status if job was cancelled (already handled)
       console.error(`Job ${jobId} failed:`, error);
       jobLog.error(jobId, `❌ Job failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       await prisma.scrapingJob.update({
@@ -777,12 +855,28 @@ export async function runScrapingJob(jobId: string): Promise<void> {
   } finally {
     // Clean up resources
     jobLog.info(jobId, '🧹 Cleaning up resources...');
+    
+    // Remove cancellation token
+    removeCancellationToken(jobId);
+    console.log(`[Job ${jobId}] Cancellation token removed`);
+    
     try {
       await scraper.close();
     } catch (e) {
       // Ignore close errors
     }
     if (browser) {
+      // Unregister browser PID before closing (handle if process() not available)
+      try {
+        if (typeof browser.process === 'function') {
+          const browserProcess = browser.process();
+          if (browserProcess?.pid) {
+            unregisterBrowserPid(browserProcess.pid);
+          }
+        }
+      } catch (e) {
+        console.log(`[Job ${jobId}] Could not get browser PID for unregistration:`, e);
+      }
       try {
         await browser.close();
       } catch (e) {

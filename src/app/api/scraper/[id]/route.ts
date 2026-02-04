@@ -103,7 +103,17 @@ export async function PATCH(
       );
     }
 
-    const body = await request.json();
+    // Parse body safely - default to cancel action if body is empty
+    let body: { action?: string } = { action: 'cancel' };
+    try {
+      const text = await request.text();
+      if (text && text.trim()) {
+        body = JSON.parse(text);
+      }
+    } catch {
+      // If JSON parsing fails, default to cancel action
+      body = { action: 'cancel' };
+    }
     
     if (body.action === 'cancel') {
       const job = await prisma.scrapingJob.findUnique({

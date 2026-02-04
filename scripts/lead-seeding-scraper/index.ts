@@ -22,6 +22,46 @@ import {
 } from './config';
 import { getLeadCount, disconnectDatabase } from './database';
 import { workerTask } from './worker';
+import { 
+  getScraperChromeArgs, 
+  registerBrowserPid, 
+  unregisterBrowserPid,
+  printProcessStatus,
+  killAllScraperProcesses,
+} from './process-manager';
+
+// Handle graceful shutdown
+let isShuttingDown = false;
+
+async function gracefulShutdown(browser: Browser | null) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  
+  console.log('\n\n🛑 Received shutdown signal - cleaning up...');
+  
+  // Unregister and close browser
+  if (browser) {
+    const browserProcess = browser.process();
+    if (browserProcess?.pid) {
+      unregisterBrowserPid(browserProcess.pid);
+    }
+    try {
+      await browser.close();
+    } catch {
+      // Ignore close errors
+    }
+  }
+  
+  // Kill any orphaned processes
+  console.log('🧹 Cleaning up any orphaned processes...');
+  await killAllScraperProcesses();
+  
+  // Disconnect database
+  await disconnectDatabase();
+  
+  console.log('✅ Cleanup complete\n');
+  process.exit(0);
+}
 
 async function main() {
   console.log('🔍 TTWF Lead Generator - Lead Seeding Scraper\n');
@@ -38,17 +78,31 @@ async function main() {
 
   let browser: Browser | null = null;
 
+  // Set up signal handlers for graceful shutdown
+  process.on('SIGINT', () => gracefulShutdown(browser));
+  process.on('SIGTERM', () => gracefulShutdown(browser));
+
   try {
+    // Show current process status
+    await printProcessStatus();
+    
     // Count existing leads
     const existingCount = await getLeadCount();
     console.log(`📊 Existing leads in database: ${existingCount}\n`);
 
-    // Launch browser
+    // Launch browser with identifiable args
     console.log('🌐 Launching browser...\n');
     browser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      args: getScraperChromeArgs(),
     });
+    
+    // Register browser PID for tracking
+    const browserProcess = browser.process();
+    if (browserProcess?.pid) {
+      registerBrowserPid(browserProcess.pid);
+      console.log(`📋 Browser PID: ${browserProcess.pid}\n`);
+    }
 
     // Build work queue
     const workQueue: WorkItem[] = [];
@@ -103,7 +157,18 @@ async function main() {
   } catch (error) {
     console.error('Fatal error:', error);
   } finally {
-    if (browser) await browser.close();
+    // Unregister browser PID before closing
+    if (browser) {
+      const browserProcess = browser.process();
+      if (browserProcess?.pid) {
+        unregisterBrowserPid(browserProcess.pid);
+      }
+      await browser.close();
+    }
+    
+    // Show final process status
+    await printProcessStatus();
+    
     await disconnectDatabase();
     process.exit(0); // Ensure clean exit
   }
