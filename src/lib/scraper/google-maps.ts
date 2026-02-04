@@ -7,6 +7,7 @@ import {
     sleepWithCancellation,
 } from './cancellation';
 import { getJobPids, getScraperChromeArgs, unregisterBrowserPid } from './process-manager';
+import { DEFAULT_COUNTRY_CODE, getCountryConfig, isAddressInCountry } from '../constants';
 
 export interface GoogleMapsScraperConfig {
   headless?: boolean;
@@ -29,9 +30,17 @@ export class GoogleMapsScraper {
   private page: Page | null = null;
   private config: GoogleMapsScraperConfig;
   private jobId: string | null = null;
+  private countryCode: string = DEFAULT_COUNTRY_CODE;
 
   constructor(config: Partial<GoogleMapsScraperConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  /**
+   * Set the country for this scraper session
+   */
+  setCountry(countryCode: string): void {
+    this.countryCode = countryCode;
   }
 
   /**
@@ -69,7 +78,7 @@ export class GoogleMapsScraper {
   async initialize(): Promise<void> {
     // Use job-specific Chrome args so processes can be identified even after restart
     const chromeArgs = getScraperChromeArgs(this.jobId || undefined);
-    console.log(`[GoogleMapsScraper] Launching browser${this.jobId ? ` for job ${this.jobId}` : ''}...`);
+    console.log(`[GoogleMapsScraper] Launching browser${this.jobId ? ` for job ${this.jobId}` : ''} for country ${this.countryCode}...`);
     
     this.browser = await chromium.launch({
       headless: this.config.headless,
@@ -86,12 +95,17 @@ export class GoogleMapsScraper {
       console.log(`[GoogleMapsScraper] Registered ${registeredCount} Chrome processes for job ${this.jobId}`);
     }
 
+    // Get country-specific settings for browser context
+    const countryConfig = getCountryConfig(this.countryCode);
+    const locale = countryConfig?.locale || 'en-ZA';
+    const geoLocation = countryConfig?.geoLocation || { latitude: -26.2041, longitude: 28.0473 };
+
     const context = await this.browser.newContext({
       viewport: { width: 1920, height: 1080 },
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      locale: 'en-ZA',
-      geolocation: { latitude: -26.2041, longitude: 28.0473 }, // Johannesburg
+      locale,
+      geolocation: geoLocation,
       permissions: ['geolocation'],
     });
 
@@ -131,7 +145,15 @@ export class GoogleMapsScraper {
     }
 
     const results: ScrapedBusiness[] = [];
-    const searchQuery = `${params.query} ${params.location}`;
+    
+    // Get country configuration for the search
+    const countryCode = params.country || DEFAULT_COUNTRY_CODE;
+    const countryConfig = getCountryConfig(countryCode);
+    const countryName = countryConfig?.name || 'South Africa';
+    
+    // Build search query with country to ensure correct location
+    // Example: "plumber East London South Africa" instead of just "plumber East London"
+    const searchQuery = `${params.query} ${params.location} ${countryName}`;
     const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(searchQuery)}`;
     const cancellationToken = this.getCancellationToken();
 
@@ -193,7 +215,9 @@ export class GoogleMapsScraper {
         
         try {
           const business = await this.extractBusinessDetails(listing);
-          if (business && this.isValidBusiness(business, params.minRating)) {
+          if (business && this.isValidBusiness(business, params.minRating, countryCode)) {
+            // Add country to the business data
+            business.country = countryCode;
             results.push(business);
           }
 
@@ -463,7 +487,7 @@ export class GoogleMapsScraper {
     }
   }
 
-  private isValidBusiness(business: ScrapedBusiness, minRating?: number): boolean {
+  private isValidBusiness(business: ScrapedBusiness, minRating?: number, countryCode?: string): boolean {
     // Must have a name and address
     if (!business.name || !business.address) {
       return false;
@@ -471,6 +495,15 @@ export class GoogleMapsScraper {
 
     // Check rating threshold
     if (minRating && business.rating && business.rating < minRating) {
+      return false;
+    }
+
+    // Validate the business is in the expected country
+    // This is critical to avoid getting results from wrong countries (e.g., East London UK vs East London SA)
+    const targetCountry = countryCode || this.countryCode;
+    if (business.address && !isAddressInCountry(business.address, targetCountry)) {
+      const countryConfig = getCountryConfig(targetCountry);
+      console.log(`   ⚠️ Skipping ${business.name} - address not in ${countryConfig?.name || targetCountry}: "${business.address}"`);
       return false;
     }
 

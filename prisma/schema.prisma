@@ -132,6 +132,7 @@ model Lead {
   businessName   String     @map("business_name")
   industry       String?
   location       String
+  country        String     @default("ZA") // Country code (e.g., "ZA" for South Africa)
   address        String?
   phone          String?
   email          String?
@@ -165,6 +166,7 @@ model Lead {
   @@index([status])
   @@index([createdAt])
   @@index([score])
+  @@index([country])
   @@map("leads")
 }
 
@@ -250,6 +252,7 @@ model ScrapingJob {
   searchQuery    String?   @map("search_query")
   categories     String[]  // Business categories to search
   locations      String[]  // Locations to search
+  country        String    @default("ZA") // Country code (e.g., "ZA" for South Africa)
   minRating      Float?    @map("min_rating")
   maxRadius      Int?      @map("max_radius") // in km
   
@@ -282,6 +285,7 @@ model AnalyzedBusiness {
   // Business identification
   businessName    String   @map("business_name")
   location        String
+  country         String   @default("ZA") // Country code (e.g., "ZA" for South Africa)
   googleMapsUrl   String?  @unique @map("google_maps_url")
   
   // Contact details found
@@ -310,6 +314,7 @@ model AnalyzedBusiness {
   @@index([businessName, location])
   @@index([isGoodProspect])
   @@index([analyzedAt])
+  @@index([country])
   @@map("analyzed_businesses")
 }
 

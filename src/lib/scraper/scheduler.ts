@@ -2,34 +2,41 @@ import { JobStatus, LeadStatus } from '@prisma/client';
 import { Browser, chromium } from 'playwright';
 import { generatePersonalizedMessage } from '../ai/personalize';
 import { SmartEnrichedLead, smartEnrichLead } from '../ai/smart-enricher';
-import { SA_CITIES, TARGET_CATEGORIES } from '../constants';
+import {
+  DEFAULT_COUNTRY_CODE,
+  getCitiesForCountry,
+  getCountryConfig,
+  SA_CITIES,
+  SUPPORTED_COUNTRIES,
+  TARGET_CATEGORIES
+} from '../constants';
 import { prisma } from '../db';
 import {
-    cancelJobToken,
-    createCancellationToken,
-    JobCancelledError,
-    removeCancellationToken,
-    sleepWithCancellation
+  cancelJobToken,
+  createCancellationToken,
+  JobCancelledError,
+  removeCancellationToken,
+  sleepWithCancellation
 } from './cancellation';
 import { createGoogleMapsScraper } from './google-maps';
 import { clearJobLogs, initJobLogs, jobLog } from './job-logger';
 import {
-    clearJobPids,
-    findAndKillJobProcesses,
-    getJobProcessInfo,
-    getProcessStatus,
-    getScraperChromeArgs,
-    killAllScraperProcesses,
-    killJobProcesses,
-    processManager,
-    restoreProcessTracking,
-    TrackedProcessInfo
+  clearJobPids,
+  findAndKillJobProcesses,
+  getJobProcessInfo,
+  getProcessStatus,
+  getScraperChromeArgs,
+  killAllScraperProcesses,
+  killJobProcesses,
+  processManager,
+  restoreProcessTracking,
+  TrackedProcessInfo
 } from './process-manager';
 import { checkIfGoodProspect, quickQualityCheck } from './quality-checker';
 
 // Re-export process manager functions for external use
 export {
-    getProcessStatus, killAllScraperProcesses, processManager
+  getProcessStatus, killAllScraperProcesses, processManager
 };
 
 // ============================================================================
@@ -135,7 +142,8 @@ interface AnalyzedBusinessCheck {
 async function checkAnalyzedHistory(
   googleMapsUrl: string | undefined,
   businessName: string,
-  location: string
+  location: string,
+  country: string = DEFAULT_COUNTRY_CODE
 ): Promise<AnalyzedBusinessCheck> {
   try {
     // First try to find by Google Maps URL (most reliable)
@@ -153,11 +161,12 @@ async function checkAnalyzedHistory(
       }
     }
     
-    // Fallback: try to find by name + location
+    // Fallback: try to find by name + location + country
     const byNameLocation = await prisma.analyzedBusiness.findFirst({
       where: {
         businessName: businessName,
         location: location,
+        country: country,
       },
     });
     
@@ -192,6 +201,7 @@ async function saveToAnalyzedHistory(
     category?: string;
   },
   location: string,
+  country: string,
   isGoodProspect: boolean,
   skipReason: string,
   websiteQuality?: number,
@@ -201,11 +211,12 @@ async function saveToAnalyzedHistory(
     // Use upsert to handle potential duplicates
     await prisma.analyzedBusiness.upsert({
       where: {
-        googleMapsUrl: business.googleMapsUrl || `manual_${business.name}_${location}`,
+        googleMapsUrl: business.googleMapsUrl || `manual_${business.name}_${location}_${country}`,
       },
       create: {
         businessName: business.name,
         location,
+        country,
         googleMapsUrl: business.googleMapsUrl,
         phone: business.phone,
         website: business.website,
@@ -234,7 +245,7 @@ async function saveToAnalyzedHistory(
 }
 
 // Re-export constants for convenience
-export { SA_CITIES, TARGET_CATEGORIES };
+export { DEFAULT_COUNTRY_CODE, SA_CITIES, SUPPORTED_COUNTRIES, TARGET_CATEGORIES };
 
 // In-memory store for job cancellation/completion signals
 // Maps jobId -> { cancelled: boolean, completed: boolean, scraper: any, browser: any }
@@ -403,7 +414,7 @@ export async function deleteJob(jobId: string): Promise<boolean> {
 /**
  * Save an AI-enriched lead to the database
  */
-async function saveSmartEnrichedLead(lead: SmartEnrichedLead): Promise<boolean> {
+async function saveSmartEnrichedLead(lead: SmartEnrichedLead, countryCode: string = DEFAULT_COUNTRY_CODE): Promise<boolean> {
   try {
     // Check if lead already exists
     const existing = await prisma.lead.findFirst({
@@ -429,12 +440,13 @@ async function saveSmartEnrichedLead(lead: SmartEnrichedLead): Promise<boolean> 
     // Calculate final score
     const score = lead.leadScore;
 
-    // Create the lead
+    // Create the lead with country
     await prisma.lead.create({
       data: {
         businessName: lead.businessName,
         industry: lead.industry,
         location: lead.location,
+        country: countryCode,
         address: lead.address,
         phone: lead.phones[0], // Primary phone
         email: lead.emails[0], // Primary email
@@ -607,24 +619,36 @@ export async function runScrapingJob(jobId: string): Promise<void> {
       jobState.browser = browser;
     }
 
-    // Get search parameters
+    // Get search parameters with country support
+    const countryCode = (job as Record<string, unknown>).country as string || DEFAULT_COUNTRY_CODE;
+    const countryConfig = getCountryConfig(countryCode);
+    const countryName = countryConfig?.name || 'South Africa';
+    
     const categories = job.categories.length > 0 ? job.categories : TARGET_CATEGORIES;
-    const locations = job.locations.length > 0 ? job.locations : SA_CITIES;
+    // Use country-specific cities if no locations specified
+    const defaultCities = getCitiesForCountry(countryCode);
+    const locations = job.locations.length > 0 ? job.locations : (defaultCities.length > 0 ? defaultCities : SA_CITIES);
     const minRating = job.minRating || 4.0;
+    
+    // Set country on scraper for proper browser context
+    scraper.setCountry(countryCode);
 
     console.log(`\n🔍 Starting AI-POWERED scraping job: ${jobId}`);
     console.log(`   🧠 Using AI for: Business Analysis, Data Extraction, Lead Qualification`);
+    console.log(`   🌍 Country: ${countryName} (${countryCode})`);
     console.log(`   Target: ${job.leadsRequested} lead(s)`);
     console.log(`   Categories: ${categories.slice(0, 3).join(', ')}${categories.length > 3 ? '...' : ''}`);
     console.log(`   Locations: ${locations.slice(0, 3).join(', ')}${locations.length > 3 ? '...' : ''}\n`);
     
     jobLog.success(jobId, `🚀 Starting AI-Powered Scraping Job`, {
       target: job.leadsRequested,
+      country: countryName,
       categories: categories.length,
       locations: locations.length,
       minRating,
     });
     jobLog.info(jobId, `🧠 AI Modules: Business Analysis, Data Extraction, Lead Qualification`);
+    jobLog.info(jobId, `🌍 Country: ${countryName} (${countryCode})`);
     jobLog.info(jobId, `📊 Target: ${job.leadsRequested} lead(s)`);
 
     // Iterate through categories and locations
@@ -652,6 +676,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
           const businesses = await scraper.searchBusinesses({
             query: category,
             location: location,
+            country: countryCode,
             minRating,
             // Only get what we need - 1 at a time for thorough AI enrichment
             maxResults: Math.min(3, job.leadsRequested - leadsFound),
@@ -686,7 +711,8 @@ export async function runScrapingJob(jobId: string): Promise<void> {
             const historyCheck = await checkAnalyzedHistory(
               business.googleMapsUrl,
               business.name,
-              location
+              location,
+              countryCode
             );
             
             // Check for cancellation after DB lookup - use BOTH token and job state
@@ -773,6 +799,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                 await saveToAnalyzedHistory(
                   business,
                   location,
+                  countryCode,
                   false,
                   skipReason,
                   websiteQualityScore
@@ -833,6 +860,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                 await saveToAnalyzedHistory(
                   business,
                   location,
+                  countryCode,
                   false,
                   `AI disqualified (Tier D, Score: ${enrichedLead.leadScore})`,
                   websiteQualityScore
@@ -843,14 +871,15 @@ export async function runScrapingJob(jobId: string): Promise<void> {
 
               jobLog.progress(jobId, `💾 Saving lead: ${business.name}`);
               
-              // Save the AI-enriched lead
-              const saved = await saveSmartEnrichedLead(enrichedLead);
+              // Save the AI-enriched lead with country
+              const saved = await saveSmartEnrichedLead(enrichedLead, countryCode);
 
               if (saved) {
                 // Save to history as converted lead
                 await saveToAnalyzedHistory(
                   business,
                   location,
+                  countryCode,
                   true,
                   `Converted to lead (Tier ${enrichedLead.qualificationTier}, Score: ${enrichedLead.leadScore})`,
                   websiteQualityScore,
@@ -1033,6 +1062,7 @@ export async function scheduleScrapingJob(options: {
   leadsRequested: number;
   categories?: string[];
   locations?: string[];
+  country?: string;
   minRating?: number;
   scheduledFor?: Date;
 }): Promise<string> {
@@ -1041,6 +1071,7 @@ export async function scheduleScrapingJob(options: {
       leadsRequested: options.leadsRequested,
       categories: options.categories || [],
       locations: options.locations || [],
+      country: options.country || DEFAULT_COUNTRY_CODE,
       minRating: options.minRating,
       scheduledFor: options.scheduledFor || new Date(),
       status: JobStatus.SCHEDULED,

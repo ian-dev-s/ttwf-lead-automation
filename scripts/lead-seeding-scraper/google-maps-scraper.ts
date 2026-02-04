@@ -32,7 +32,9 @@ export async function scrapeGoogleMaps(
   }
   
   const results: ScrapedBusinessResult[] = [];
-  const searchQuery = `${query} ${location} South Africa`;
+  // Use configurable country from config (defaults to South Africa)
+  const country = process.env.SCRAPER_COUNTRY || 'South Africa';
+  const searchQuery = `${query} ${location} ${country}`;
   const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(searchQuery)}`;
 
   try {

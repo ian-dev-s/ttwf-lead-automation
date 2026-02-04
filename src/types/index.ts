@@ -24,6 +24,7 @@ export interface CreateLeadInput {
   businessName: string;
   industry?: string;
   location: string;
+  country?: string; // Country code (e.g., "ZA" for South Africa)
   address?: string;
   phone?: string;
   email?: string;
@@ -86,6 +87,7 @@ export interface AIProviderConfig {
 export interface ScrapingParams {
   query: string;
   location: string;
+  country?: string; // Country code (e.g., "ZA" for South Africa)
   category?: string;
   minRating?: number;
   maxResults?: number;
@@ -96,6 +98,7 @@ export interface ScrapingParams {
 export interface ScrapedBusiness {
   name: string;
   address: string;
+  country?: string; // Country code where business was found
   phone?: string;
   website?: string;
   rating?: number;

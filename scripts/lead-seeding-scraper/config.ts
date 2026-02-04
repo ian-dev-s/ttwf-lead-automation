@@ -1,5 +1,8 @@
 /**
  * Configuration for the lead seeding scraper
+ * 
+ * To change the target country, set SCRAPER_COUNTRY environment variable
+ * Example: SCRAPER_COUNTRY="United Kingdom"
  */
 
 // Scraping configuration

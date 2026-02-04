@@ -26,9 +26,16 @@ interface ScrapingJob {
   leadsFound: number;
   categories: string[];
   locations: string[];
+  country: string;
   scheduledFor: string;
   completedAt: string | null;
   error: string | null;
+}
+
+interface CountryOption {
+  code: string;
+  name: string;
+  cities: string[];
 }
 
 // Preset options for number of leads
@@ -38,6 +45,8 @@ export default function ScraperPage() {
   const [jobs, setJobs] = useState<ScrapingJob[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [cities, setCities] = useState<string[]>([]);
+  const [countries, setCountries] = useState<CountryOption[]>([]);
+  const [defaultCountry, setDefaultCountry] = useState<string>('ZA');
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -45,6 +54,7 @@ export default function ScraperPage() {
   const [leadsRequested, setLeadsRequested] = useState(1);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedCity, setSelectedCity] = useState<string>('all');
+  const [selectedCountry, setSelectedCountry] = useState<string>('ZA');
   const [minRating, setMinRating] = useState(4.0);
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
   const [stoppingJobId, setStoppingJobId] = useState<string | null>(null);
@@ -106,6 +116,14 @@ export default function ScraperPage() {
       setJobs(data.jobs || []);
       setCategories(data.availableCategories || []);
       setCities(data.availableCities || []);
+      setCountries(data.availableCountries || []);
+      if (data.defaultCountry) {
+        setDefaultCountry(data.defaultCountry);
+        // Set selected country to default on first load
+        if (!selectedCountry || selectedCountry === 'ZA') {
+          setSelectedCountry(data.defaultCountry);
+        }
+      }
     } catch (error) {
       console.error('Error fetching jobs:', error);
     } finally {
@@ -123,6 +141,7 @@ export default function ScraperPage() {
           leadsRequested,
           categories: selectedCategory === 'all' ? [] : [selectedCategory],
           locations: selectedCity === 'all' ? [] : [selectedCity],
+          country: selectedCountry,
           minRating,
           runImmediately: true,
         }),
@@ -270,7 +289,7 @@ export default function ScraperPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
               <div className="space-y-2">
                 <Label>Number of Leads</Label>
                 <Select 
@@ -293,6 +312,32 @@ export default function ScraperPage() {
                   {leadsRequested === 1 
                     ? 'Full enrichment for one business' 
                     : `Enrich ${leadsRequested} businesses sequentially`}
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Country</Label>
+                <Select 
+                  value={selectedCountry} 
+                  onValueChange={(value) => {
+                    setSelectedCountry(value);
+                    // Reset city selection when country changes
+                    setSelectedCity('all');
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {countries.map((country) => (
+                      <SelectItem key={country.code} value={country.code}>
+                        {country.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Restricts search to this country
                 </p>
               </div>
 
@@ -321,7 +366,8 @@ export default function ScraperPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Cities</SelectItem>
-                    {cities.map((city) => (
+                    {/* Show cities for selected country */}
+                    {(countries.find(c => c.code === selectedCountry)?.cities || cities).map((city) => (
                       <SelectItem key={city} value={city}>
                         {city}
                       </SelectItem>
@@ -427,6 +473,10 @@ export default function ScraperPage() {
                           {job.locations.length > 0
                             ? job.locations.join(', ')
                             : 'All cities'}
+                          {' '}
+                          <span className="text-xs px-1.5 py-0.5 bg-muted rounded">
+                            {countries.find(c => c.code === job.country)?.name || job.country || 'South Africa'}
+                          </span>
                         </p>
                       </div>
                     </div>

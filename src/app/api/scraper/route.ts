@@ -1,6 +1,7 @@
 import { auth } from '@/lib/auth';
+import { getCitiesForCountry, SUPPORTED_COUNTRIES } from '@/lib/constants';
 import { prisma } from '@/lib/db';
-import { runScrapingJob, SA_CITIES, scheduleScrapingJob, TARGET_CATEGORIES } from '@/lib/scraper/scheduler';
+import { DEFAULT_COUNTRY_CODE, runScrapingJob, SA_CITIES, scheduleScrapingJob, TARGET_CATEGORIES } from '@/lib/scraper/scheduler';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -9,6 +10,7 @@ const scheduleJobSchema = z.object({
   leadsRequested: z.number().min(1).max(100),
   categories: z.array(z.string()).optional(),
   locations: z.array(z.string()).optional(),
+  country: z.string().optional(), // Country code (e.g., "ZA")
   minRating: z.number().min(0).max(5).optional(),
   scheduledFor: z.string().datetime().optional(),
   runImmediately: z.boolean().optional(),
@@ -24,11 +26,15 @@ export async function GET(request: NextRequest) {
 
     const searchParams = request.nextUrl.searchParams;
     const status = searchParams.get('status');
+    const countryFilter = searchParams.get('country');
     const limit = parseInt(searchParams.get('limit') || '10');
 
-    const where: any = {};
+    const where: Record<string, unknown> = {};
     if (status) {
       where.status = status;
+    }
+    if (countryFilter) {
+      where.country = countryFilter;
     }
 
     const jobs = await prisma.scrapingJob.findMany({
@@ -37,10 +43,19 @@ export async function GET(request: NextRequest) {
       take: limit,
     });
 
+    // Build list of available countries with their cities
+    const availableCountries = Object.entries(SUPPORTED_COUNTRIES).map(([code, config]) => ({
+      code,
+      name: config.name,
+      cities: config.cities,
+    }));
+
     return NextResponse.json({
       jobs,
       availableCategories: TARGET_CATEGORIES,
-      availableCities: SA_CITIES,
+      availableCities: SA_CITIES, // Default cities (SA) for backwards compatibility
+      availableCountries,
+      defaultCountry: DEFAULT_COUNTRY_CODE,
     });
   } catch (error) {
     console.error('Error fetching scraping jobs:', error);
@@ -68,11 +83,32 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { runImmediately, scheduledFor, ...jobData } = scheduleJobSchema.parse(body);
+    const { runImmediately, scheduledFor, country, ...jobData } = scheduleJobSchema.parse(body);
 
-    // Schedule the job
+    // Validate country code if provided
+    const countryCode = country || DEFAULT_COUNTRY_CODE;
+    if (!SUPPORTED_COUNTRIES[countryCode]) {
+      return NextResponse.json(
+        { error: `Unsupported country code: ${countryCode}. Supported: ${Object.keys(SUPPORTED_COUNTRIES).join(', ')}` },
+        { status: 400 }
+      );
+    }
+
+    // If locations are provided, validate they're in the selected country
+    // If not provided, the scheduler will use the country's default cities
+    const countryConfig = SUPPORTED_COUNTRIES[countryCode];
+    if (jobData.locations && jobData.locations.length > 0) {
+      const invalidLocations = jobData.locations.filter(loc => !countryConfig.cities.includes(loc));
+      if (invalidLocations.length > 0) {
+        console.warn(`Warning: Some locations may not be in ${countryConfig.name}: ${invalidLocations.join(', ')}`);
+        // Don't reject - just warn, as users might add custom locations
+      }
+    }
+
+    // Schedule the job with country
     const jobId = await scheduleScrapingJob({
       ...jobData,
+      country: countryCode,
       scheduledFor: scheduledFor ? new Date(scheduledFor) : new Date(),
     });
 
@@ -93,8 +129,8 @@ export async function POST(request: NextRequest) {
         success: true,
         job,
         message: runImmediately 
-          ? 'Scraping job started' 
-          : 'Scraping job scheduled',
+          ? `Scraping job started for ${countryConfig.name}` 
+          : `Scraping job scheduled for ${countryConfig.name}`,
       },
       { status: 201 }
     );
