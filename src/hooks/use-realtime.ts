@@ -20,6 +20,9 @@ interface RealtimeState {
 const MIN_RECONNECT_DELAY = 30000;
 // Maximum time between reconnection attempts (5 minutes)
 const MAX_RECONNECT_DELAY = 300000;
+// Heartbeat timeout - if no heartbeat received within this time, reconnect
+// Server sends heartbeats every 30 seconds, so 45 seconds gives some buffer
+const HEARTBEAT_TIMEOUT = 45000;
 
 export function useRealtime(options: UseRealtimeOptions = {}) {
   const { onEvent, eventTypes, enabled = true } = options;
@@ -32,6 +35,7 @@ export function useRealtime(options: UseRealtimeOptions = {}) {
   
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const heartbeatTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttempts = useRef(0);
   const hadSuccessfulConnection = useRef(false); // Track if we ever connected successfully
   const onEventRef = useRef(onEvent);
@@ -57,6 +61,10 @@ export function useRealtime(options: UseRealtimeOptions = {}) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
+    if (heartbeatTimeoutRef.current) {
+      clearTimeout(heartbeatTimeoutRef.current);
+      heartbeatTimeoutRef.current = null;
+    }
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
@@ -75,6 +83,39 @@ export function useRealtime(options: UseRealtimeOptions = {}) {
       const eventSource = new EventSource('/api/events');
       eventSourceRef.current = eventSource;
 
+      // Function to reset heartbeat timeout
+      const resetHeartbeat = () => {
+        if (heartbeatTimeoutRef.current) {
+          clearTimeout(heartbeatTimeoutRef.current);
+        }
+        
+        heartbeatTimeoutRef.current = setTimeout(() => {
+          if (!isMountedRef.current) return;
+          
+          console.log('[Realtime] Heartbeat timeout - connection may be stale, reconnecting...');
+          setState((prev) => ({ ...prev, isConnected: false }));
+          
+          // Close the stale connection
+          eventSource.close();
+          eventSourceRef.current = null;
+          
+          // Clear heartbeat timeout
+          if (heartbeatTimeoutRef.current) {
+            clearTimeout(heartbeatTimeoutRef.current);
+            heartbeatTimeoutRef.current = null;
+          }
+          
+          // Reconnect immediately since this is a stale connection, not a server error
+          reconnectAttempts.current = 0;
+          hadSuccessfulConnection.current = false; // Allow quick reconnect
+          setTimeout(() => {
+            if (isMountedRef.current && enabledRef.current) {
+              connect();
+            }
+          }, 100);
+        }, HEARTBEAT_TIMEOUT);
+      };
+
       eventSource.onopen = () => {
         if (!isMountedRef.current) {
           eventSource.close();
@@ -83,10 +124,15 @@ export function useRealtime(options: UseRealtimeOptions = {}) {
         setState((prev) => ({ ...prev, isConnected: true, error: null }));
         reconnectAttempts.current = 0;
         hadSuccessfulConnection.current = true;
+        // Start heartbeat timeout monitoring
+        resetHeartbeat();
       };
 
       eventSource.onmessage = (event) => {
         if (!isMountedRef.current) return;
+        
+        // Reset heartbeat timeout on ANY message from server
+        resetHeartbeat();
         
         try {
           const data = JSON.parse(event.data) as AppEvent | { 
@@ -100,7 +146,7 @@ export function useRealtime(options: UseRealtimeOptions = {}) {
             return;
           }
           if (data.type === 'heartbeat') {
-            // Heartbeat received - connection is healthy
+            // Heartbeat received - connection is healthy (timeout already reset above)
             return;
           }
           if (data.type === 'redis_connected') {

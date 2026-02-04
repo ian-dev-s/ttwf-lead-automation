@@ -53,12 +53,12 @@ export async function GET(request: NextRequest) {
       // Send initial connection message
       safeEnqueue(`data: ${JSON.stringify({ type: 'connected', timestamp: Date.now() })}\n\n`);
 
-      // Set up heartbeat to keep connection alive (every 15 seconds)
+      // Set up heartbeat to keep connection alive (every 30 seconds)
       heartbeatInterval = setInterval(() => {
         if (!safeEnqueue(`data: ${JSON.stringify({ type: 'heartbeat', timestamp: Date.now() })}\n\n`)) {
           cleanup();
         }
-      }, 15000);
+      }, 30000);
 
       // Handle client disconnect
       request.signal.addEventListener('abort', () => {

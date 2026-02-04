@@ -52,42 +52,94 @@ const CHANNEL = 'app:events';
 // Publisher client - for sending events
 let publisherClient: Redis | null = null;
 let publisherConnecting = false;
+let publisherReady: Promise<Redis | null> | null = null;
 
-// Get or create publisher client - returns the client even if not connected yet
-// The publish call will handle connection state
+// Get or create publisher client - waits for connection to be ready
 async function getPublisher(): Promise<Redis | null> {
   if (!process.env.REDIS_URL) {
     return null;
   }
   
-  if (!publisherClient && !publisherConnecting) {
-    publisherConnecting = true;
-    
-    publisherClient = new Redis(process.env.REDIS_URL, {
-      maxRetriesPerRequest: 1,
-      connectTimeout: 5000,
-      lazyConnect: false, // Connect immediately
-      enableOfflineQueue: true, // Queue commands while connecting
-      retryStrategy: (times) => {
-        if (times > 3) return null;
-        return Math.min(times * 1000, 5000);
-      },
-    });
-    
-    publisherClient.on('error', (err) => {
-      console.error('[Events] Publisher Redis error:', err.message);
-    });
-    
-    publisherClient.on('ready', () => {
-      console.log('[Events] Publisher Redis connected');
-    });
-    
-    publisherClient.on('close', () => {
-      console.log('[Events] Publisher Redis disconnected');
-    });
+  // If we already have a ready publisher, return it
+  if (publisherClient && publisherClient.status === 'ready') {
+    return publisherClient;
   }
   
-  return publisherClient;
+  // If we're already waiting for connection, wait for that to complete
+  if (publisherReady) {
+    return publisherReady;
+  }
+  
+  // Create the promise that will resolve when connected
+  publisherReady = new Promise<Redis | null>((resolve) => {
+    // Start connecting if not already
+    if (!publisherClient && !publisherConnecting) {
+      publisherConnecting = true;
+      
+      publisherClient = new Redis(process.env.REDIS_URL!, {
+        maxRetriesPerRequest: 3,
+        connectTimeout: 5000,
+        lazyConnect: false, // Connect immediately
+        enableOfflineQueue: true, // Queue commands while connecting
+        retryStrategy: (times) => {
+          if (times > 5) return null;
+          return Math.min(times * 1000, 5000);
+        },
+      });
+      
+      publisherClient.on('error', (err) => {
+        console.error('[Events] Publisher Redis error:', err.message);
+      });
+      
+      publisherClient.on('close', () => {
+        console.log('[Events] Publisher Redis disconnected');
+        // Reset state so we can reconnect
+        publisherConnecting = false;
+        publisherReady = null;
+      });
+      
+      publisherClient.on('end', () => {
+        console.log('[Events] Publisher Redis connection ended');
+        publisherClient = null;
+        publisherConnecting = false;
+        publisherReady = null;
+      });
+    }
+    
+    if (!publisherClient) {
+      resolve(null);
+      return;
+    }
+    
+    // If already ready, resolve immediately
+    if (publisherClient.status === 'ready') {
+      console.log('[Events] Publisher Redis already connected');
+      resolve(publisherClient);
+      return;
+    }
+    
+    // Wait for ready event with timeout
+    const timeout = setTimeout(() => {
+      console.log('[Events] Publisher connection timeout after 3s');
+      resolve(null);
+    }, 3000);
+    
+    const onReady = () => {
+      clearTimeout(timeout);
+      console.log('[Events] Publisher Redis connected');
+      resolve(publisherClient);
+    };
+    
+    const onError = () => {
+      clearTimeout(timeout);
+      resolve(null);
+    };
+    
+    publisherClient.once('ready', onReady);
+    publisherClient.once('error', onError);
+  });
+  
+  return publisherReady;
 }
 
 // Create a new subscriber client (each SSE connection needs its own)
@@ -118,7 +170,10 @@ export function createSubscriber(): Redis {
 export async function publishEvent<T>(type: EventType, data: T): Promise<void> {
   try {
     const publisher = await getPublisher();
-    if (!publisher) return;
+    if (!publisher) {
+      console.log(`[Events] No publisher available, skipping event: ${type}`);
+      return;
+    }
     
     const event: AppEvent<T> = {
       type,
@@ -194,3 +249,11 @@ export const events = {
   scraperError: (event: ScraperEvent) => publishEvent('scraper:error', event),
   statsUpdated: (stats: StatsEvent) => publishEvent('stats:updated', stats),
 };
+
+// Initialize publisher eagerly on module load (non-blocking)
+// This ensures the publisher is ready when events need to be published
+if (typeof window === 'undefined' && process.env.REDIS_URL) {
+  getPublisher().catch(() => {
+    // Ignore errors - publisher will retry when needed
+  });
+}
