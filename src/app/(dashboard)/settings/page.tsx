@@ -17,7 +17,7 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { modelOptions } from '@/lib/ai/constants';
-import { ArrowDownToLine, ArrowUpFromLine, Brain, Check, CheckCircle2, Key, Loader2, Mail, MessageSquare, Palette, Save, Search, Trash2, XCircle } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, Brain, Check, CheckCircle2, Globe, Key, Loader2, Mail, MessageSquare, Palette, Save, Search, Trash2, XCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 interface ProviderStatus {
@@ -132,6 +132,22 @@ export default function SettingsPage() {
     password: '',
     maskedUser: null as string | null,
   });
+  const [proxyForm, setProxyForm] = useState({
+    mode: 'none' as 'none' | 'system' | 'manual',
+    httpHost: '',
+    httpPort: '',
+    useHttpForHttps: false,
+    httpsHost: '',
+    httpsPort: '',
+    socksHost: '',
+    socksPort: '',
+    socksVersion: 5 as 4 | 5,
+    noProxyFor: '',
+    dnsOverSocks: false,
+  });
+  const [systemProxyInfo, setSystemProxyInfo] = useState<{ url: string | null; type: string | null } | null>(null);
+  const [isSavingProxy, setIsSavingProxy] = useState(false);
+  const [saveProxyResult, setSaveProxyResult] = useState<{ success: boolean; message: string } | null>(null);
   const [isSavingEmail, setIsSavingEmail] = useState(false);
 
   // API keys state
@@ -190,6 +206,24 @@ export default function SettingsPage() {
           password: '',
           maskedUser: emailConfigData.imap.user || null,
         });
+        if (emailConfigData.proxy) {
+          setProxyForm({
+            mode: emailConfigData.proxy.mode || 'none',
+            httpHost: emailConfigData.proxy.httpHost || '',
+            httpPort: emailConfigData.proxy.httpPort ? String(emailConfigData.proxy.httpPort) : '',
+            useHttpForHttps: emailConfigData.proxy.useHttpForHttps || false,
+            httpsHost: emailConfigData.proxy.httpsHost || '',
+            httpsPort: emailConfigData.proxy.httpsPort ? String(emailConfigData.proxy.httpsPort) : '',
+            socksHost: emailConfigData.proxy.socksHost || '',
+            socksPort: emailConfigData.proxy.socksPort ? String(emailConfigData.proxy.socksPort) : '',
+            socksVersion: emailConfigData.proxy.socksVersion || 5,
+            noProxyFor: emailConfigData.proxy.noProxyFor || '',
+            dnsOverSocks: emailConfigData.proxy.dnsOverSocks || false,
+          });
+        }
+        if (emailConfigData.systemProxy) {
+          setSystemProxyInfo(emailConfigData.systemProxy);
+        }
       }
       
       // Set default provider to first available
@@ -435,6 +469,87 @@ export default function SettingsPage() {
     }
   };
 
+  const handleSaveProxyConfig = async () => {
+    setIsSavingProxy(true);
+    setSaveProxyResult(null);
+    try {
+      const payload: Record<string, unknown> = {
+        proxyMode: proxyForm.mode,
+      };
+
+      if (proxyForm.mode === 'manual') {
+        payload.proxyHttpHost = proxyForm.httpHost || null;
+        payload.proxyHttpPort = proxyForm.httpPort ? parseInt(proxyForm.httpPort) : null;
+        payload.proxyUseHttpForHttps = proxyForm.useHttpForHttps;
+        payload.proxyHttpsHost = proxyForm.httpsHost || null;
+        payload.proxyHttpsPort = proxyForm.httpsPort ? parseInt(proxyForm.httpsPort) : null;
+        payload.proxySocksHost = proxyForm.socksHost || null;
+        payload.proxySocksPort = proxyForm.socksPort ? parseInt(proxyForm.socksPort) : null;
+        payload.proxySocksVersion = proxyForm.socksVersion;
+        payload.proxyNoProxyFor = proxyForm.noProxyFor || null;
+        payload.proxyDnsOverSocks = proxyForm.dnsOverSocks;
+      } else {
+        // Clear manual fields when not in manual mode
+        payload.proxyHttpHost = null;
+        payload.proxyHttpPort = null;
+        payload.proxyUseHttpForHttps = false;
+        payload.proxyHttpsHost = null;
+        payload.proxyHttpsPort = null;
+        payload.proxySocksHost = null;
+        payload.proxySocksPort = null;
+        payload.proxySocksVersion = null;
+        payload.proxyNoProxyFor = null;
+        payload.proxyDnsOverSocks = false;
+      }
+
+      const response = await fetch('/api/settings/email-config', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to save proxy config');
+      }
+
+      const data = await response.json();
+
+      // Update form state from response
+      if (data.proxy) {
+        setProxyForm({
+          mode: data.proxy.mode || 'none',
+          httpHost: data.proxy.httpHost || '',
+          httpPort: data.proxy.httpPort ? String(data.proxy.httpPort) : '',
+          useHttpForHttps: data.proxy.useHttpForHttps || false,
+          httpsHost: data.proxy.httpsHost || '',
+          httpsPort: data.proxy.httpsPort ? String(data.proxy.httpsPort) : '',
+          socksHost: data.proxy.socksHost || '',
+          socksPort: data.proxy.socksPort ? String(data.proxy.socksPort) : '',
+          socksVersion: data.proxy.socksVersion || 5,
+          noProxyFor: data.proxy.noProxyFor || '',
+          dnsOverSocks: data.proxy.dnsOverSocks || false,
+        });
+      }
+      if (data.systemProxy) {
+        setSystemProxyInfo(data.systemProxy);
+      }
+
+      setSaveProxyResult({ success: true, message: 'Connection settings saved successfully!' });
+
+      // Auto-dismiss success message after 5 seconds
+      setTimeout(() => setSaveProxyResult(null), 5000);
+    } catch (error) {
+      console.error('Error saving proxy config:', error);
+      setSaveProxyResult({
+        success: false,
+        message: error instanceof Error ? error.message : 'Failed to save proxy config',
+      });
+    } finally {
+      setIsSavingProxy(false);
+    }
+  };
+
   const handleAddApiKey = async () => {
     if (!newApiKey.apiKey.trim()) {
       setTestResult({ success: false, message: 'API key is required' });
@@ -537,6 +652,10 @@ export default function SettingsPage() {
             <TabsTrigger value="messages" className="gap-2">
               <MessageSquare className="h-4 w-4" />
               Message Settings
+            </TabsTrigger>
+            <TabsTrigger value="proxy" className="gap-2">
+              <Globe className="h-4 w-4" />
+              Proxy
             </TabsTrigger>
           </TabsList>
 
@@ -1450,6 +1569,235 @@ export default function SettingsPage() {
                   <Save className="h-4 w-4 mr-2" />
                   Save Settings
                 </Button>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Proxy Tab (Thunderbird-style Connection Settings) */}
+          <TabsContent value="proxy" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Globe className="h-5 w-5" />
+                  Connection Settings
+                </CardTitle>
+                <CardDescription>
+                  Configure proxies to access the internet. These settings apply to all mail connections (IMAP &amp; SMTP).
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Save result feedback */}
+                {saveProxyResult && (
+                  <div className={`flex items-center gap-2 p-3 rounded-lg ${
+                    saveProxyResult.success
+                      ? 'bg-green-500/10 border border-green-500/30'
+                      : 'bg-destructive/10 border border-destructive/30'
+                  }`}>
+                    {saveProxyResult.success
+                      ? <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
+                      : <XCircle className="h-4 w-4 text-destructive shrink-0" />
+                    }
+                    <span className={`text-sm ${
+                      saveProxyResult.success ? 'text-green-700 dark:text-green-400' : 'text-destructive'
+                    }`}>
+                      {saveProxyResult.message}
+                    </span>
+                  </div>
+                )}
+
+                {/* ── Proxy Mode Radio Buttons ── */}
+                <div className="space-y-3">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="proxyMode"
+                      checked={proxyForm.mode === 'none'}
+                      onChange={() => setProxyForm(prev => ({ ...prev, mode: 'none' }))}
+                      className="h-4 w-4 text-primary"
+                    />
+                    <span className="text-sm font-medium">No proxy</span>
+                  </label>
+
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="proxyMode"
+                      checked={proxyForm.mode === 'system'}
+                      onChange={() => setProxyForm(prev => ({ ...prev, mode: 'system' }))}
+                      className="h-4 w-4 text-primary"
+                    />
+                    <span className="text-sm font-medium">Use system proxy settings</span>
+                  </label>
+
+                  {/* System proxy detected info */}
+                  {proxyForm.mode === 'system' && (
+                    <div className="ml-7 p-3 rounded-lg bg-muted/50 border text-sm">
+                      <span className="font-medium">Detected: </span>
+                      {systemProxyInfo?.url ? (
+                        <code className="text-muted-foreground">{systemProxyInfo.url}</code>
+                      ) : (
+                        <span className="text-amber-600 dark:text-amber-400">
+                          No system proxy detected. Set HTTP_PROXY, HTTPS_PROXY, or ALL_PROXY environment variable.
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="proxyMode"
+                      checked={proxyForm.mode === 'manual'}
+                      onChange={() => setProxyForm(prev => ({ ...prev, mode: 'manual' }))}
+                      className="h-4 w-4 text-primary"
+                    />
+                    <span className="text-sm font-medium">Manual proxy configuration:</span>
+                  </label>
+                </div>
+
+                {/* ── Manual Proxy Fields ── */}
+                {proxyForm.mode === 'manual' && (
+                  <div className="ml-7 space-y-4 p-4 rounded-lg border bg-muted/20">
+                    {/* HTTP Proxy */}
+                    <div className="flex items-center gap-3">
+                      <Label className="w-28 text-sm shrink-0">HTTP Proxy:</Label>
+                      <Input
+                        value={proxyForm.httpHost}
+                        onChange={(e) => setProxyForm(prev => ({ ...prev, httpHost: e.target.value }))}
+                        placeholder="proxy.example.com"
+                        className="flex-1"
+                      />
+                      <Label className="text-sm shrink-0">Port:</Label>
+                      <Input
+                        type="number"
+                        value={proxyForm.httpPort}
+                        onChange={(e) => setProxyForm(prev => ({ ...prev, httpPort: e.target.value }))}
+                        placeholder="0"
+                        className="w-24"
+                      />
+                    </div>
+
+                    {/* "Also use this proxy for HTTPS" checkbox */}
+                    <div className="ml-28 pl-1">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={proxyForm.useHttpForHttps}
+                          onChange={(e) => setProxyForm(prev => ({ ...prev, useHttpForHttps: e.target.checked }))}
+                          className="h-4 w-4"
+                        />
+                        <span className="text-sm">Also use this proxy for HTTPS</span>
+                      </label>
+                    </div>
+
+                    {/* HTTPS Proxy */}
+                    <div className="flex items-center gap-3">
+                      <Label className={`w-28 text-sm shrink-0 ${proxyForm.useHttpForHttps ? 'text-muted-foreground' : ''}`}>
+                        HTTPS Proxy:
+                      </Label>
+                      <Input
+                        value={proxyForm.useHttpForHttps ? proxyForm.httpHost : proxyForm.httpsHost}
+                        onChange={(e) => setProxyForm(prev => ({ ...prev, httpsHost: e.target.value }))}
+                        placeholder="proxy.example.com"
+                        className="flex-1"
+                        disabled={proxyForm.useHttpForHttps}
+                      />
+                      <Label className={`text-sm shrink-0 ${proxyForm.useHttpForHttps ? 'text-muted-foreground' : ''}`}>
+                        Port:
+                      </Label>
+                      <Input
+                        type="number"
+                        value={proxyForm.useHttpForHttps ? proxyForm.httpPort : proxyForm.httpsPort}
+                        onChange={(e) => setProxyForm(prev => ({ ...prev, httpsPort: e.target.value }))}
+                        placeholder="0"
+                        className="w-24"
+                        disabled={proxyForm.useHttpForHttps}
+                      />
+                    </div>
+
+                    {/* SOCKS Host */}
+                    <div className="flex items-center gap-3">
+                      <Label className="w-28 text-sm shrink-0">SOCKS Host:</Label>
+                      <Input
+                        value={proxyForm.socksHost}
+                        onChange={(e) => setProxyForm(prev => ({ ...prev, socksHost: e.target.value }))}
+                        placeholder="127.0.0.1"
+                        className="flex-1"
+                      />
+                      <Label className="text-sm shrink-0">Port:</Label>
+                      <Input
+                        type="number"
+                        value={proxyForm.socksPort}
+                        onChange={(e) => setProxyForm(prev => ({ ...prev, socksPort: e.target.value }))}
+                        placeholder="0"
+                        className="w-24"
+                      />
+                    </div>
+
+                    {/* SOCKS version radio */}
+                    <div className="ml-28 pl-1 flex items-center gap-4">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="socksVersion"
+                          checked={proxyForm.socksVersion === 4}
+                          onChange={() => setProxyForm(prev => ({ ...prev, socksVersion: 4 }))}
+                          className="h-4 w-4"
+                        />
+                        <span className="text-sm">SOCKS v4</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="socksVersion"
+                          checked={proxyForm.socksVersion === 5}
+                          onChange={() => setProxyForm(prev => ({ ...prev, socksVersion: 5 }))}
+                          className="h-4 w-4"
+                        />
+                        <span className="text-sm">SOCKS v5</span>
+                      </label>
+                    </div>
+
+                    {/* Separator */}
+                    <div className="border-t my-2" />
+
+                    {/* No proxy for */}
+                    <div className="space-y-2">
+                      <Label className="text-sm text-destructive font-medium">No proxy for:</Label>
+                      <textarea
+                        value={proxyForm.noProxyFor}
+                        onChange={(e) => setProxyForm(prev => ({ ...prev, noProxyFor: e.target.value }))}
+                        placeholder=".mozilla.org, .net.nz, 192.168.1.0/24"
+                        className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 min-h-[60px] resize-y"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Example: .mozilla.org, .net.nz, 192.168.1.0/24
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Connections to localhost, 127.0.0.1, and ::1 are never proxied.
+                      </p>
+                    </div>
+
+                    {/* Proxy DNS when using SOCKS v5 */}
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={proxyForm.dnsOverSocks}
+                        onChange={(e) => setProxyForm(prev => ({ ...prev, dnsOverSocks: e.target.checked }))}
+                        className="h-4 w-4"
+                      />
+                      <span className="text-sm">Proxy DNS when using SOCKS v5</span>
+                    </label>
+                  </div>
+                )}
+
+                <div className="pt-4 border-t flex gap-3">
+                  <Button onClick={handleSaveProxyConfig} disabled={isSavingProxy}>
+                    {isSavingProxy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    <Save className="h-4 w-4 mr-2" />
+                    Save Connection Settings
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>

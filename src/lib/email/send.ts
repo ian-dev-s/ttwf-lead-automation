@@ -1,5 +1,5 @@
 import nodemailer from 'nodemailer';
-import { getEmailConfig, isSmtpConfigured } from './config';
+import { getEmailConfig, isSmtpConfigured, resolveMailProxy, createProxiedSocket } from './config';
 
 export interface SendEmailOptions {
   to: string;
@@ -24,6 +24,8 @@ async function createTransporter(teamId: string) {
     throw new Error('SMTP is not configured. Go to Settings > Email to configure your SMTP server.');
   }
 
+  const proxy = await resolveMailProxy(teamId, config.smtp.host);
+
   return nodemailer.createTransport({
     host: config.smtp.host,
     port: config.smtp.port,
@@ -38,6 +40,14 @@ async function createTransporter(teamId: string) {
       // Allow older TLS versions that local mail servers may use
       minVersion: 'TLSv1' as const,
     },
+    // Tunnel through proxy if configured (SOCKS4/5 or HTTP CONNECT)
+    ...(proxy ? {
+      getSocket(_options: Record<string, unknown>, callback: (err: Error | null, socketOptions?: { connection: unknown }) => void) {
+        createProxiedSocket(proxy, config.smtp.host, config.smtp.port)
+          .then((socket) => callback(null, { connection: socket }))
+          .catch((err) => callback(err));
+      },
+    } : {}),
   });
 }
 

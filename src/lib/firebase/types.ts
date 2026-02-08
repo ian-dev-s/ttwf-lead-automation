@@ -92,6 +92,29 @@ export interface TeamSettingsDoc {
   imapUser: string | null;
   imapPass: string | null;
 
+  // Connection Proxy (Thunderbird-style, app-wide starting with mail)
+  proxyMode: 'none' | 'system' | 'manual' | null;
+
+  // Manual: HTTP Proxy
+  proxyHttpHost: string | null;
+  proxyHttpPort: number | null;
+  proxyUseHttpForHttps: boolean;
+
+  // Manual: HTTPS Proxy (used when proxyUseHttpForHttps is false)
+  proxyHttpsHost: string | null;
+  proxyHttpsPort: number | null;
+
+  // Manual: SOCKS Proxy
+  proxySocksHost: string | null;
+  proxySocksPort: number | null;
+  proxySocksVersion: 4 | 5 | null;
+
+  // Exclusions (comma-separated domains/IPs)
+  proxyNoProxyFor: string | null;
+
+  // Options
+  proxyDnsOverSocks: boolean;
+
   updatedAt: Date;
 }
 

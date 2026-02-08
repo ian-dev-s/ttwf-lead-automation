@@ -1,6 +1,6 @@
-import { ImapFlow } from 'imapflow';
 import { inboundEmailsCollection, leadsCollection } from '@/lib/firebase/collections';
-import { getImapConfig, isImapConfigured } from './config';
+import { ImapFlow } from 'imapflow';
+import { getImapConfig, isImapConfigured, getProxyUrl } from './config';
 
 export interface FetchResult {
   fetched: number;
@@ -13,8 +13,13 @@ export interface FetchResult {
  */
 async function createImapClient(teamId: string): Promise<ImapFlow> {
   const config = await getImapConfig(teamId);
+  const proxyUrl = await getProxyUrl(teamId, config.host);
   
   const isLocalhost = ['localhost', '127.0.0.1', '::1'].includes(config.host);
+
+  // Debug logging
+  console.log(`[IMAP] Creating client for ${config.host}:${config.port}`);
+  console.log(`[IMAP] Proxy URL: ${proxyUrl || '(direct connection)'}`);
 
   return new ImapFlow({
     host: config.host,
@@ -25,6 +30,8 @@ async function createImapClient(teamId: string): Promise<ImapFlow> {
       pass: config.auth.pass,
     },
     logger: false,
+    // Tunnel through proxy if configured (supports socks5://, socks4://, http://)
+    ...(proxyUrl ? { proxy: proxyUrl } : {}),
     // When secure is false and on localhost, don't attempt STARTTLS upgrade
     // (local mail servers like hMailServer often don't support it on the plain port)
     ...((!config.secure && isLocalhost) ? { disableAutoIdle: false } : {}),
@@ -190,11 +197,17 @@ export async function verifyImapConnection(teamId: string): Promise<{ success: b
   const client = await createImapClient(teamId);
 
   try {
+    console.log('[IMAP] Attempting to connect...');
     await client.connect();
+    console.log('[IMAP] Connected successfully, logging out...');
     await client.logout();
     return { success: true };
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
+    console.error('[IMAP] Connection error:', errMsg);
+    if (error instanceof Error && error.stack) {
+      console.error('[IMAP] Stack:', error.stack);
+    }
     
     // Provide more actionable error messages
     if (errMsg.includes('Unexpected close') || errMsg.includes('ECONNRESET')) {

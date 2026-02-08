@@ -1,10 +1,16 @@
 import { auth } from '@/lib/auth';
-import { getMaskedSmtpConfig } from '@/lib/email/config';
-import { verifySmtpConnection } from '@/lib/email/send';
+import { getMaskedSmtpConfig, getMaskedImapConfig } from '@/lib/email/config';
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * GET /api/email/status
+ * 
+ * Returns email configuration status (is it configured or not).
+ * Does NOT verify connections - that's done via /api/email/test-connection.
+ * This keeps the endpoint fast for page loads.
+ */
 export async function GET() {
   try {
     const session = await auth();
@@ -14,14 +20,15 @@ export async function GET() {
 
     const teamId = session.user.teamId;
 
-    const config = await getMaskedSmtpConfig(teamId);
-    const connection = await verifySmtpConnection(teamId);
+    const [smtpConfig, imapConfig] = await Promise.all([
+      getMaskedSmtpConfig(teamId),
+      getMaskedImapConfig(teamId),
+    ]);
 
     return NextResponse.json({
-      isConfigured: config.isConfigured,
-      connected: connection.connected,
-      error: connection.error,
-      config,
+      isConfigured: smtpConfig.isConfigured,
+      smtp: smtpConfig,
+      imap: imapConfig,
     });
   } catch (error) {
     console.error('Error checking email status:', error);
