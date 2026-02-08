@@ -1,14 +1,13 @@
 import { generatePersonalizedMessage, quickPersonalize } from '@/lib/ai/personalize';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { MessageType } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
 // Validation schema
 const generateMessageSchema = z.object({
   leadId: z.string().min(1, 'Lead ID is required'),
-  type: z.nativeEnum(MessageType),
+  type: z.enum(['EMAIL']).optional().default('EMAIL'),
   useAI: z.boolean().default(true),
   saveMessage: z.boolean().default(true),
 });
@@ -28,12 +27,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const teamId = session.user.teamId;
+
     const body = await request.json();
-    const { leadId, type, useAI, saveMessage } = generateMessageSchema.parse(body);
+    const { leadId, useAI, saveMessage } = generateMessageSchema.parse(body);
 
     // Get the lead
-    const lead = await prisma.lead.findUnique({
-      where: { id: leadId },
+    const lead = await prisma.lead.findFirst({
+      where: { id: leadId, teamId },
     });
 
     if (!lead) {
@@ -46,14 +47,14 @@ export async function POST(request: NextRequest) {
     let model: string = 'none';
     let generatedBy: 'ai' | 'template' = 'template';
 
-    console.log(`📝 [Message Generation] Lead: ${lead.businessName} | Type: ${type} | UseAI: ${useAI}`);
+    console.log(`📝 [Message Generation] Lead: ${lead.businessName} | Type: EMAIL | UseAI: ${useAI}`);
 
     if (useAI) {
       try {
         console.log(`🤖 [AI] Attempting AI generation for ${lead.businessName}...`);
         const result = await generatePersonalizedMessage({
+          teamId,
           lead,
-          messageType: type,
         });
         content = result.content;
         subject = result.subject;
@@ -63,12 +64,12 @@ export async function POST(request: NextRequest) {
         console.log(`✅ [AI] Successfully generated with ${provider}/${model}`);
       } catch (aiError) {
         console.error(`❌ [AI] Generation failed, falling back to template:`, aiError);
-        content = quickPersonalize(lead, type);
+        content = quickPersonalize(lead);
         generatedBy = 'template';
         console.log(`📋 [Template] Using template fallback for ${lead.businessName}`);
       }
     } else {
-      content = quickPersonalize(lead, type);
+      content = quickPersonalize(lead);
       generatedBy = 'template';
       console.log(`📋 [Template] Using template (AI disabled) for ${lead.businessName}`);
     }
@@ -78,8 +79,9 @@ export async function POST(request: NextRequest) {
     if (saveMessage) {
       message = await prisma.message.create({
         data: {
+          teamId,
           leadId,
-          type,
+          type: 'EMAIL',
           subject,
           content,
           status: 'DRAFT',

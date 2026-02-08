@@ -46,7 +46,7 @@ export default function ScraperPage() {
   const [categories, setCategories] = useState<string[]>([]);
   const [cities, setCities] = useState<string[]>([]);
   const [countries, setCountries] = useState<CountryOption[]>([]);
-  const [defaultCountry, setDefaultCountry] = useState<string>('ZA');
+  const [, setDefaultCountry] = useState<string>('ZA');
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
 

@@ -81,6 +81,7 @@ Guidelines:
  * Extract contact and business information from raw text using AI
  */
 export async function extractDataWithAI(
+  teamId: string,
   text: string,
   businessName?: string
 ): Promise<{ contacts: ExtractedContactInfo; business: ExtractedBusinessInfo }> {
@@ -90,7 +91,7 @@ export async function extractDataWithAI(
 
   const prompt = buildExtractionPrompt(text, businessName);
   
-  const model = getLanguageModel({
+  const model = await getLanguageModel(teamId, {
     provider: 'OPENROUTER',
     model: 'google/gemini-3-flash-preview',
   });
@@ -292,11 +293,12 @@ function fallbackExtraction(text: string): { contacts: ExtractedContactInfo; bus
  * Extract data from multiple text sources and merge results
  */
 export async function extractAndMergeData(
+  teamId: string,
   sources: { source: string; text: string }[],
   businessName?: string
 ): Promise<{ contacts: ExtractedContactInfo; business: ExtractedBusinessInfo }> {
   const results = await Promise.all(
-    sources.map(s => extractDataWithAI(s.text, businessName))
+    sources.map(s => extractDataWithAI(teamId, s.text, businessName))
   );
   
   // Merge all results

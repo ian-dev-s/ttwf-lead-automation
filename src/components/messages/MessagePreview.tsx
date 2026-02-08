@@ -18,18 +18,18 @@ import {
     TooltipProvider,
     TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { formatPhoneNumber, getWhatsAppUrl } from '@/lib/utils';
+import { formatDateTime } from '@/lib/utils';
 import { Lead, Message } from '@prisma/client';
 import {
     Bot,
     Check,
     Copy,
     Edit2,
-    ExternalLink,
     FileText,
     Mail,
     RefreshCw,
-    Smartphone,
+    Reply,
+    RotateCw,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
@@ -50,8 +50,8 @@ export function MessagePreview({ message, onUpdate }: MessagePreviewProps) {
   const [copied, setCopied] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-
-  const isWhatsApp = message.type === 'WHATSAPP';
+  const [isResending, setIsResending] = useState(false);
+  const [isCreatingFollowUp, setIsCreatingFollowUp] = useState(false);
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(message.content);
@@ -88,7 +88,7 @@ export function MessagePreview({ message, onUpdate }: MessagePreviewProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           leadId: message.lead.id,
-          type: message.type,
+          type: 'EMAIL',
           useAI: true,
           saveMessage: false,
         }),
@@ -106,9 +106,43 @@ export function MessagePreview({ message, onUpdate }: MessagePreviewProps) {
     }
   };
 
-  const openWhatsApp = () => {
-    if (message.lead.phone) {
-      window.open(getWhatsAppUrl(message.lead.phone, message.content), '_blank');
+  const handleResend = async () => {
+    setIsResending(true);
+    try {
+      const response = await fetch(`/api/messages/${message.id}/resend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!response.ok) throw new Error('Failed to resend');
+
+      router.refresh();
+    } catch (error) {
+      console.error('Error resending message:', error);
+    } finally {
+      setIsResending(false);
+    }
+  };
+
+  const handleCreateFollowUp = async () => {
+    setIsCreatingFollowUp(true);
+    try {
+      const response = await fetch('/api/messages/follow-up', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          leadId: message.lead.id,
+          previousMessageId: message.id,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to create follow-up');
+
+      router.refresh();
+    } catch (error) {
+      console.error('Error creating follow-up:', error);
+    } finally {
+      setIsCreatingFollowUp(false);
     }
   };
 
@@ -119,14 +153,8 @@ export function MessagePreview({ message, onUpdate }: MessagePreviewProps) {
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            {isWhatsApp ? (
-              <Smartphone className="h-5 w-5 text-green-600" />
-            ) : (
-              <Mail className="h-5 w-5 text-blue-600" />
-            )}
-            <CardTitle className="text-lg">
-              {isWhatsApp ? 'WhatsApp Message' : 'Email Message'}
-            </CardTitle>
+            <Mail className="h-5 w-5 text-blue-600" />
+            <CardTitle className="text-lg">Email Message</CardTitle>
           </div>
           <div className="flex items-center gap-2">
             {/* AI/Template Badge */}
@@ -161,19 +189,36 @@ export function MessagePreview({ message, onUpdate }: MessagePreviewProps) {
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
-            <Badge
-              variant={message.status === 'APPROVED' ? 'default' : 'secondary'}
-            >
-              {message.status}
-            </Badge>
+            {message.status === 'FAILED' ? (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge variant="destructive">
+                      FAILED
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {message.error || 'Message failed to send'}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ) : (
+              <Badge
+                variant={message.status === 'APPROVED' ? 'default' : 'secondary'}
+              >
+                {message.status}
+              </Badge>
+            )}
           </div>
         </div>
+        {message.sentAt && (
+          <div className="text-xs text-muted-foreground mt-1">
+            Sent: {formatDateTime(message.sentAt)}
+          </div>
+        )}
         <div className="text-sm text-muted-foreground">
           To: <span className="font-medium">{message.lead.businessName}</span>
-          {message.lead.phone && isWhatsApp && (
-            <span> ({formatPhoneNumber(message.lead.phone)})</span>
-          )}
-          {message.lead.email && !isWhatsApp && (
+          {message.lead.email && (
             <span> ({message.lead.email})</span>
           )}
         </div>
@@ -234,10 +279,31 @@ export function MessagePreview({ message, onUpdate }: MessagePreviewProps) {
             Regenerate
           </Button>
 
-          {isWhatsApp && message.lead.phone && (
-            <Button variant="default" size="sm" onClick={openWhatsApp}>
-              <ExternalLink className="h-4 w-4 mr-2" />
-              Open in WhatsApp
+          {(message.status === 'SENT' || message.status === 'FAILED') && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleResend}
+              disabled={isResending}
+            >
+              <RotateCw
+                className={`h-4 w-4 mr-2 ${isResending ? 'animate-spin' : ''}`}
+              />
+              Resend
+            </Button>
+          )}
+
+          {message.status === 'SENT' && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCreateFollowUp}
+              disabled={isCreatingFollowUp}
+            >
+              <Reply
+                className={`h-4 w-4 mr-2 ${isCreatingFollowUp ? 'animate-spin' : ''}`}
+              />
+              Create Follow-up
             </Button>
           )}
         </div>

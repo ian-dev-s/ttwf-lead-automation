@@ -106,6 +106,7 @@ export async function smartEnrichLead(
   location: string,
   industry: string,
   workerId: number = 1,
+  teamId: string,
   cancellationToken?: CancellationToken
 ): Promise<SmartEnrichedLead> {
   // Check cancellation immediately
@@ -215,8 +216,8 @@ export async function smartEnrichLead(
   // OPTIMIZATION: Run AI extraction and cross-reference IN PARALLEL
   console.log(`   [Worker ${workerId}] ⚡ Parallel AI: extraction + cross-reference`);
   const [extractedData, validation] = await Promise.all([
-    extractAndMergeData(textSources, business.name),
-    crossReferenceWithAI(dataSources, business.name),
+    extractAndMergeData(teamId, textSources, business.name),
+    crossReferenceWithAI(teamId, dataSources, business.name),
   ]);
   
   // Check cancellation after AI extraction
@@ -248,7 +249,7 @@ export async function smartEnrichLead(
   
   // OPTIMIZATION: Run business analysis (needed for qualification input)
   console.log(`   [Worker ${workerId}] 📊 AI analyzing business...`);
-  const analysis = await analyzeBusinessWithAI(businessData);
+  const analysis = await analyzeBusinessWithAI(teamId, businessData);
   
   // Check cancellation after analysis
   if (cancellationToken?.isCancelled) {
@@ -274,7 +275,7 @@ export async function smartEnrichLead(
     extractedInfo: extractedData,
   };
   
-  const qualification = await qualifyLeadWithAI(qualificationInput);
+  const qualification = await qualifyLeadWithAI(teamId, qualificationInput);
   
   // Build the final enriched lead
   const enrichedLead = buildEnrichedLead(
@@ -636,7 +637,7 @@ function buildEnrichedLead(
     address: validation.mergedData.address || business.address,
     
     description: analysis.businessDescription,
-    servicesOffered: [...new Set([...analysis.servicesOffered, ...extracted.business.services])],
+    servicesOffered: Array.from(new Set([...analysis.servicesOffered, ...extracted.business.services])),
     targetMarket: analysis.targetMarket,
     uniqueSellingPoints: analysis.uniqueSellingPoints,
     
@@ -646,7 +647,7 @@ function buildEnrichedLead(
     recommendedAction: qualification.recommendedAction,
     recommendedChannel: qualification.recommendedChannel,
     
-    personalizationHooks: [...new Set([...analysis.personalizationHooks, ...qualification.keyTalkingPoints])],
+    personalizationHooks: Array.from(new Set([...analysis.personalizationHooks, ...qualification.keyTalkingPoints])),
     keyTalkingPoints: qualification.keyTalkingPoints,
     avoidTopics: qualification.avoidTopics,
     

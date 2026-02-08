@@ -5,7 +5,6 @@ import { kanbanColumnOrder, leadStatusLabels } from '@/lib/utils';
 import { DragDropContext, DropResult } from '@hello-pangea/dnd';
 import { Lead, LeadStatus } from '@prisma/client';
 import { AlertCircle, RefreshCw, Wifi, WifiOff, X } from 'lucide-react';
-import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState, useTransition } from 'react';
 import { KanbanColumn } from './Column';
 
@@ -27,7 +26,6 @@ interface KanbanBoardProps {
 }
 
 export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
-  const router = useRouter();
   const [leads, setLeads] = useState<LeadWithMessages[]>(initialLeads);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isPending, startTransition] = useTransition();

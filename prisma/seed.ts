@@ -1,7 +1,6 @@
-import { AIProvider, LeadStatus, PrismaClient, UserRole } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
-import bcrypt from 'bcryptjs';
 import { config } from 'dotenv';
 
 config();
@@ -12,265 +11,124 @@ const pool = new Pool({
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
-// South African business leads data - Real business types in major cities
-const businessCategories = [
-  'Plumber',
-  'Electrician',
-  'Painter',
-  'Landscaper',
-  'Cleaner',
-  'Caterer',
-  'Photographer',
-  'Personal Trainer',
-  'Beauty Salon',
-  'Auto Mechanic',
-  'Carpenter',
-  'Locksmith',
-  'Pest Control',
-  'Moving Company',
-  'Handyman',
-  'Florist',
-  'Pet Groomer',
-  'Interior Designer',
-  'Event Planner',
-  'Tutoring Service',
-];
-
-const cities = [
-  { name: 'Johannesburg', areas: ['Sandton', 'Rosebank', 'Braamfontein', 'Fourways', 'Midrand', 'Randburg'] },
-  { name: 'Cape Town', areas: ['Sea Point', 'Gardens', 'Claremont', 'Stellenbosch', 'Somerset West', 'Bellville'] },
-  { name: 'Durban', areas: ['Umhlanga', 'Berea', 'Morningside', 'Westville', 'Pinetown', 'Ballito'] },
-  { name: 'Pretoria', areas: ['Centurion', 'Hatfield', 'Menlyn', 'Brooklyn', 'Waterkloof', 'Silverton'] },
-  { name: 'Port Elizabeth', areas: ['Summerstrand', 'Walmer', 'Newton Park', 'Mill Park', 'Humewood', 'Lorraine'] },
-  { name: 'Bloemfontein', areas: ['Westdene', 'Universitas', 'Langenhovenpark', 'Willows', 'Bayswater', 'Fichardtpark'] },
-];
-
-// Business name generators
-const businessPrefixes = [
-  'Pro', 'Expert', 'Quality', 'Premier', 'Elite', 'Master', 'Best', 'Top', 
-  'Reliable', 'Trusted', 'Swift', 'Rapid', 'Quick', 'Affordable', 'Budget',
-  'Ace', 'Prime', 'Alpha', 'Mega', 'Super', 'Ultra', 'Max', 'Golden', 'Silver'
-];
-
-const businessSuffixes = [
-  'Services', 'Solutions', 'Experts', 'Pros', 'Team', 'Co', 'Group',
-  'Works', 'Care', 'Fix', 'Hub', 'Zone', 'Plus', 'SA', 'RSA'
-];
-
-function generateBusinessName(category: string): string {
-  const usePrefix = Math.random() > 0.3;
-  const useSuffix = Math.random() > 0.2;
-  
-  let name = category;
-  
-  if (usePrefix) {
-    const prefix = businessPrefixes[Math.floor(Math.random() * businessPrefixes.length)];
-    name = `${prefix} ${name}`;
-  }
-  
-  if (useSuffix) {
-    const suffix = businessSuffixes[Math.floor(Math.random() * businessSuffixes.length)];
-    name = `${name} ${suffix}`;
-  }
-  
-  return name;
-}
-
-function generatePhoneNumber(): string {
-  const prefixes = ['082', '083', '084', '072', '073', '074', '076', '078', '079', '081', '060', '061', '062', '063', '064', '065', '066', '067', '068', '069'];
-  const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
-  const number = Math.floor(Math.random() * 9000000) + 1000000;
-  return `${prefix}${number}`;
-}
-
-function generateRating(): number {
-  // Weight towards higher ratings (4.0-5.0)
-  const ratings = [3.5, 3.8, 4.0, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.9, 5.0];
-  const weights = [1, 2, 5, 8, 10, 12, 15, 18, 15, 8, 4, 2, 1];
-  
-  const totalWeight = weights.reduce((a, b) => a + b, 0);
-  let random = Math.random() * totalWeight;
-  
-  for (let i = 0; i < ratings.length; i++) {
-    random -= weights[i];
-    if (random <= 0) return ratings[i];
-  }
-  
-  return 4.5;
-}
-
-function generateReviewCount(): number {
-  // Varied review counts, some businesses have few, some have many
-  const ranges = [
-    { min: 5, max: 20, weight: 30 },
-    { min: 20, max: 50, weight: 25 },
-    { min: 50, max: 100, weight: 20 },
-    { min: 100, max: 200, weight: 15 },
-    { min: 200, max: 500, weight: 8 },
-    { min: 500, max: 1000, weight: 2 },
-  ];
-  
-  const totalWeight = ranges.reduce((a, b) => a + b.weight, 0);
-  let random = Math.random() * totalWeight;
-  
-  for (const range of ranges) {
-    random -= range.weight;
-    if (random <= 0) {
-      return Math.floor(Math.random() * (range.max - range.min)) + range.min;
-    }
-  }
-  
-  return 50;
-}
-
-function calculateScore(hasWebsite: boolean, websiteQuality: number | null, rating: number, reviews: number, hasPhone: boolean): number {
-  let score = 0;
-  
-  if (!hasWebsite) score += 50;
-  else if (websiteQuality && websiteQuality < 50) score += 30;
-  
-  score += rating * 10;
-  score += Math.min(Math.log10(reviews) * 10, 30);
-  
-  if (hasPhone) score += 20;
-  
-  return Math.round(score);
-}
-
 async function main() {
   console.log('Starting database seed...');
 
-  // Create admin user
-  const adminPassword = await bcrypt.hash(process.env.ADMIN_PASSWORD || 'admin123', 12);
-  
-  const admin = await prisma.user.upsert({
-    where: { email: process.env.ADMIN_EMAIL || 'admin@thetinywebfactory.com' },
-    update: {},
-    create: {
-      email: process.env.ADMIN_EMAIL || 'admin@thetinywebfactory.com',
-      name: 'Admin User',
-      passwordHash: adminPassword,
-      role: UserRole.ADMIN,
-    },
-  });
+  // Check if any team exists
+  const teamCount = await prisma.team.count();
 
-  console.log(`Created admin user: ${admin.email}`);
+  if (teamCount === 0) {
+    console.log('\nNo teams found. Use the setup wizard at /setup to create your first team and admin account.');
+    console.log('The setup wizard will also create default email templates.\n');
+    return;
+  }
 
-  // Create system settings
-  await prisma.systemSettings.upsert({
-    where: { id: 'default' },
-    update: {},
-    create: {
-      id: 'default',
-      dailyLeadTarget: 10,
-      leadGenerationEnabled: true,
-      scrapeDelayMs: 2000,
-      maxLeadsPerRun: 20,
-      searchRadiusKm: 50,
-      minGoogleRating: 4.0,
-      targetIndustries: businessCategories,
-      blacklistedIndustries: [],
-      targetCities: cities.map(c => c.name),
-      autoGenerateMessages: true,
-    },
-  });
+  console.log(`Found ${teamCount} team(s). Checking for email templates...`);
 
-  console.log('Created system settings');
+  // Get all teams
+  const teams = await prisma.team.findMany();
 
-  // Generate 100+ leads
-  const leads: any[] = [];
-  let leadCount = 0;
-  const targetLeads = 120; // Generate slightly more than 100
+  for (const team of teams) {
+    // Check if team has email templates
+    const templateCount = await prisma.emailTemplate.count({
+      where: { teamId: team.id },
+    });
 
-  for (const city of cities) {
-    for (const area of city.areas) {
-      for (const category of businessCategories) {
-        if (leadCount >= targetLeads) break;
-        
-        // Not all combinations will generate leads
-        if (Math.random() > 0.25) continue;
+    if (templateCount > 0) {
+      console.log(`Team "${team.name}" already has ${templateCount} template(s). Skipping.`);
+      continue;
+    }
 
-        const businessName = generateBusinessName(category);
-        const phone = generatePhoneNumber();
-        const rating = generateRating();
-        const reviews = generateReviewCount();
-        
-        // Most leads should NOT have websites (that's our target market)
-        const hasWebsite = Math.random() < 0.15;
-        const websiteQuality = hasWebsite ? Math.floor(Math.random() * 40) + 10 : null;
-        
-        const hasFacebook = Math.random() < 0.4;
-        
-        const score = calculateScore(!hasWebsite, websiteQuality, rating, reviews, true);
+    console.log(`Seeding default templates for team "${team.name}"...`);
 
-        leads.push({
-          businessName,
-          industry: category,
-          location: `${area}, ${city.name}`,
-          address: `${Math.floor(Math.random() * 200) + 1} ${area} Road, ${city.name}`,
-          phone,
-          email: null, // Most won't have email
-          facebookUrl: hasFacebook ? `https://facebook.com/${businessName.toLowerCase().replace(/\s+/g, '')}` : null,
-          googleMapsUrl: `https://maps.google.com/?q=${encodeURIComponent(businessName + ' ' + city.name)}`,
-          website: hasWebsite ? `http://${businessName.toLowerCase().replace(/\s+/g, '')}.co.za` : null,
-          websiteQuality,
-          googleRating: rating,
-          reviewCount: reviews,
-          status: LeadStatus.NEW,
-          source: 'seed',
-          score,
-          createdById: admin.id,
-          metadata: {
-            seeded: true,
-            seedDate: new Date().toISOString(),
-          },
-        });
+    const templates = [
+      {
+        teamId: team.id,
+        name: 'Initial Outreach',
+        description: 'First contact email to businesses without a website or with a low-quality website',
+        purpose: 'outreach',
+        systemPrompt: `You are an expert copywriter helping businesses establish their online presence.
 
-        leadCount++;
-      }
+Your task is to write personalized outreach emails to businesses that could benefit from having a professional website. The messages should:
+
+1. Be warm, professional, and genuine
+2. Reference specific details about their business (ratings, reviews, location)
+3. Highlight their strengths (great reviews, established reputation)
+4. Gently mention the opportunity (no website or low-quality website)
+5. Present the offer clearly (free draft website, no obligation)
+6. Include a clear call to action
+
+Key guidelines:
+- Never be pushy or salesy
+- Focus on how we can help them grow
+- Be respectful of their time
+- For EMAIL messages: Use HTML formatting. Use <p>, <br>, <strong>, <em>, <a href="..."> tags. Do NOT use markdown.`,
+        subjectLine: 'A Professional Website for {businessName}',
+        isActive: true,
+        isDefault: true,
+        tone: 'professional',
+        maxLength: 2000,
+        mustInclude: ['free draft', 'no obligation'],
+        avoidTopics: ['competitor names', 'pricing details', 'negative comments about current website'],
+      },
+      {
+        teamId: team.id,
+        name: 'Friendly Follow-up',
+        description: 'Follow-up email for businesses that have not responded to the initial outreach',
+        purpose: 'follow_up',
+        systemPrompt: `You are an expert copywriter. You are writing a follow-up email to a business that was previously contacted but has not responded.
+
+Guidelines:
+1. Be polite and not pushy - acknowledge they are busy
+2. Briefly reference the previous email without repeating all the details
+3. Reiterate the key value proposition (free draft website)
+4. Keep it shorter than the initial outreach
+5. Provide an easy call to action
+6. For EMAIL messages: Use HTML formatting with <p>, <br>, <strong>, <em>, <a> tags. Do NOT use markdown.
+7. The tone should be warm and understanding, not aggressive or desperate`,
+        subjectLine: 'Following up - Website for {businessName}',
+        isActive: true,
+        isDefault: true,
+        tone: 'friendly',
+        maxLength: 1000,
+        mustInclude: ['free draft'],
+        avoidTopics: ['competitor names', 'pricing details', 'guilt-tripping'],
+      },
+      {
+        teamId: team.id,
+        name: 'Re-engagement',
+        description: 'Re-engage businesses that showed initial interest but went cold',
+        purpose: 're_engagement',
+        systemPrompt: `You are an expert copywriter. You are writing a re-engagement email to a business that showed some initial interest but has gone quiet.
+
+Guidelines:
+1. Be respectful of their time and decision
+2. Offer something new or a fresh perspective
+3. Keep it very brief and to the point
+4. Make it easy to say yes or no
+5. For EMAIL messages: Use HTML formatting with <p>, <br>, <strong>, <em>, <a> tags. Do NOT use markdown.
+6. Consider mentioning a seasonal offer or new portfolio piece`,
+        subjectLine: 'Quick update from us',
+        isActive: true,
+        isDefault: true,
+        tone: 'casual',
+        maxLength: 800,
+        mustInclude: [],
+        avoidTopics: ['competitor names', 'pricing details', 'pressure tactics'],
+      },
+    ];
+
+    for (const template of templates) {
+      await prisma.emailTemplate.create({ data: template });
+      console.log(`  Created template: ${template.name}`);
     }
   }
 
-  // Shuffle leads to mix up the order
-  leads.sort(() => Math.random() - 0.5);
-
-  // Insert leads in batches
-  const batchSize = 50;
-  for (let i = 0; i < leads.length; i += batchSize) {
-    const batch = leads.slice(i, i + batchSize);
-    await prisma.lead.createMany({
-      data: batch,
-      skipDuplicates: true,
-    });
-    console.log(`Created leads ${i + 1} to ${Math.min(i + batchSize, leads.length)}`);
-  }
-
-  console.log(`\nTotal leads created: ${leads.length}`);
-
-  // Create a default AI config if API keys are available
-  if (process.env.OPENAI_API_KEY) {
-    await prisma.aIConfig.upsert({
-      where: { id: 'default-openai' },
-      update: {},
-      create: {
-        id: 'default-openai',
-        name: 'OpenAI GPT-4o Mini',
-        provider: AIProvider.OPENAI,
-        model: 'gpt-4o-mini',
-        temperature: 0.7,
-        maxTokens: 1000,
-        isActive: true,
-      },
-    });
-    console.log('Created default OpenAI configuration');
-  }
-
   console.log('\nSeed completed successfully!');
-  console.log(`\nTo get started:`);
-  console.log(`1. Run: docker-compose up -d (to start PostgreSQL and Redis)`);
-  console.log(`2. Run: npx prisma migrate dev (to apply migrations)`);
-  console.log(`3. Run: npm run dev (to start the development server)`);
-  console.log(`4. Login with: ${admin.email} / ${process.env.ADMIN_PASSWORD || 'admin123'}`);
+  console.log('\nTo get started:');
+  console.log('1. Run: docker-compose up -d (to start PostgreSQL)');
+  console.log('2. Run: npm run dev (to start the development server)');
+  console.log('3. Visit /setup if this is a fresh install');
 }
 
 main()

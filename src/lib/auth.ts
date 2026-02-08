@@ -7,10 +7,11 @@ import Credentials from 'next-auth/providers/credentials';
 import { prisma } from './db';
 import { authConfig } from './auth.config';
 
-// Extend the User type to include role
+// Extend the User type to include role and teamId
 declare module 'next-auth' {
   interface User {
     role?: UserRole;
+    teamId?: string | null;
   }
   interface Session {
     user: {
@@ -18,6 +19,7 @@ declare module 'next-auth' {
       email: string;
       name: string | null;
       role: UserRole;
+      teamId: string;
       image: string | null;
     };
   }
@@ -27,6 +29,7 @@ declare module '@auth/core/jwt' {
   interface JWT {
     id: string;
     role: UserRole;
+    teamId: string;
   }
 }
 
@@ -67,6 +70,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           email: user.email,
           name: user.name,
           role: user.role,
+          teamId: user.teamId,
           image: user.image,
         };
       },
@@ -78,6 +82,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       if (user) {
         token.id = user.id as string;
         token.role = user.role as UserRole;
+        token.teamId = (user.teamId as string) || '';
       }
       return token;
     },
@@ -85,6 +90,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       if (token && session.user) {
         session.user.id = token.id;
         session.user.role = token.role;
+        session.user.teamId = token.teamId;
       }
       return session;
     },

@@ -22,6 +22,8 @@ export async function PATCH(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     if (session.user.role === 'VIEWER') {
       return NextResponse.json(
         { error: 'Insufficient permissions' },
@@ -34,8 +36,8 @@ export async function PATCH(
     const { status, notes } = statusUpdateSchema.parse(body);
 
     // Get current lead with messages
-    const currentLead = await prisma.lead.findUnique({
-      where: { id },
+    const currentLead = await prisma.lead.findFirst({
+      where: { id, teamId },
       include: {
         messages: true,
       },
@@ -83,6 +85,7 @@ export async function PATCH(
           toStatus: status,
           changedById: session.user.id,
           notes,
+          teamId,
         },
       });
     } else {

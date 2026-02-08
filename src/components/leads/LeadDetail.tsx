@@ -228,7 +228,6 @@ export function LeadDetail({ lead }: LeadDetailProps) {
   const sentMessages = lead.messages.filter((m) => m.status === 'SENT');
   
   // Check for message requirements
-  const hasMessages = lead.messages.length > 0;
   const hasEmailMessage = lead.messages.some(m => m.type === 'EMAIL');
   const canQualify = hasEmailMessage;
 

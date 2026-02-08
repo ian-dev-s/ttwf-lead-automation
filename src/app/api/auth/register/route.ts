@@ -35,6 +35,9 @@ export async function POST(request: NextRequest) {
     const userCount = await prisma.user.count();
     const role = userCount === 0 ? 'ADMIN' : 'USER';
 
+    // Find a default team to assign the user to
+    const defaultTeam = await prisma.team.findFirst();
+
     // Create user
     const user = await prisma.user.create({
       data: {
@@ -42,6 +45,7 @@ export async function POST(request: NextRequest) {
         name,
         passwordHash,
         role,
+        teamId: defaultTeam?.id,
       },
       select: {
         id: true,

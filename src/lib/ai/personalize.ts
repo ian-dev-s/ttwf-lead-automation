@@ -1,17 +1,22 @@
-import { Lead, MessageType } from '@prisma/client';
+import { Lead } from '@prisma/client';
 import { generateText } from 'ai';
 import { prisma } from '../db';
-import { MESSAGE_SYSTEM_PROMPT, generateMessagePrompt, getGuardrailsPrompt } from './prompts';
+import { MESSAGE_SYSTEM_PROMPT, generateMessagePrompt, generateFollowUpPrompt, getGuardrailsPrompt, buildEnhancedSystemPrompt } from './prompts';
 import { defaultModel, getLanguageModel, type SimpleProvider } from './providers';
 
 export interface PersonalizeOptions {
+  teamId: string;
   lead: Lead;
-  messageType: MessageType;
   provider?: SimpleProvider;
   model?: string;
   temperature?: number;
   maxTokens?: number;
   guardrails?: Record<string, unknown>;
+  templatePurpose?: 'outreach' | 'follow_up' | 're_engagement';
+  previousMessage?: {
+    content: string;
+    subject?: string;
+  };
 }
 
 export interface PersonalizedMessage {
@@ -22,23 +27,25 @@ export interface PersonalizedMessage {
   tokensUsed?: number;
 }
 
-// Generate a personalized message for a lead
+// Generate a personalized message for a lead (team-scoped)
 export async function generatePersonalizedMessage(
   options: PersonalizeOptions
 ): Promise<PersonalizedMessage> {
   const {
+    teamId,
     lead,
-    messageType,
     provider = 'OPENROUTER',
     model,
     temperature = 0.7,
     maxTokens = 1000,
     guardrails = {},
+    templatePurpose = 'outreach',
+    previousMessage,
   } = options;
 
-  // Get the active AI config from database, or use defaults
+  // Get the active AI config from database (team-scoped), or use defaults
   const activeConfig = await prisma.aIConfig.findFirst({
-    where: { isActive: true },
+    where: { teamId, isActive: true },
   });
 
   const finalProvider = (activeConfig?.provider || provider) as SimpleProvider;
@@ -46,9 +53,70 @@ export async function generatePersonalizedMessage(
   const finalTemperature = activeConfig?.temperature ?? temperature;
   const finalMaxTokens = activeConfig?.maxTokens ?? maxTokens;
 
+  // Look up email template from database (team-scoped)
+  let systemPrompt = MESSAGE_SYSTEM_PROMPT;
+  let templateGuardrails = guardrails;
+  
+  const template = await prisma.emailTemplate.findFirst({
+    where: {
+      teamId,
+      purpose: templatePurpose,
+      isActive: true,
+      isDefault: true,
+    },
+  }) || await prisma.emailTemplate.findFirst({
+    where: {
+      teamId,
+      purpose: templatePurpose,
+      isActive: true,
+    },
+  });
+
+  // Fetch AI training data (team-scoped)
+  const [trainingSettings, knowledgeItems, sampleResponses] = await Promise.all([
+    prisma.teamSettings.findUnique({
+      where: { teamId },
+      select: {
+        aiTone: true,
+        aiWritingStyle: true,
+        aiCustomInstructions: true,
+      },
+    }),
+    prisma.aIKnowledgeItem.findMany({
+      where: { teamId },
+      select: { title: true, content: true },
+    }),
+    prisma.aISampleResponse.findMany({
+      where: { teamId },
+      select: { customerQuestion: true, preferredResponse: true },
+    }),
+  ]);
+
+  // Build enhanced system prompt with template + training data
+  systemPrompt = buildEnhancedSystemPrompt(template, {
+    aiTone: trainingSettings?.aiTone,
+    aiWritingStyle: trainingSettings?.aiWritingStyle,
+    aiCustomInstructions: trainingSettings?.aiCustomInstructions,
+    knowledgeItems,
+    sampleResponses,
+  });
+
+  if (template) {
+    // Merge template guardrails with provided guardrails
+    templateGuardrails = {
+      ...guardrails,
+      ...(template.tone && { tone: template.tone }),
+      ...(template.maxLength && { maxMessageLength: template.maxLength }),
+      ...(template.mustInclude && template.mustInclude.length > 0 && { mustInclude: template.mustInclude }),
+      ...(template.avoidTopics && template.avoidTopics.length > 0 && { avoidTopics: template.avoidTopics }),
+    };
+  }
+
   // Build the prompt
-  const userPrompt = generateMessagePrompt(lead, messageType);
-  const guardrailsAddition = getGuardrailsPrompt(guardrails);
+  const userPrompt = previousMessage
+    ? generateFollowUpPrompt(lead, previousMessage.content, previousMessage.subject)
+    : generateMessagePrompt(lead);
+  const guardrailsAddition = getGuardrailsPrompt(templateGuardrails);
   const fullPrompt = userPrompt + guardrailsAddition;
 
   // Retry logic for network issues
@@ -57,15 +125,15 @@ export async function generatePersonalizedMessage(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // Generate the message using the AI SDK
-      const languageModel = getLanguageModel({
+      // Generate the message using the AI SDK (team-scoped API key)
+      const languageModel = await getLanguageModel(teamId, {
         provider: finalProvider,
         model: finalModel,
       });
 
       const result = await generateText({
         model: languageModel,
-        system: MESSAGE_SYSTEM_PROMPT,
+        system: systemPrompt,
         prompt: fullPrompt,
         temperature: finalTemperature,
         maxOutputTokens: finalMaxTokens,
@@ -76,12 +144,10 @@ export async function generatePersonalizedMessage(
       let subject: string | undefined;
 
       // Extract subject line for emails
-      if (messageType === 'EMAIL') {
-        const subjectMatch = content.match(/^Subject:\s*(.+?)[\n\r]/i);
-        if (subjectMatch) {
-          subject = subjectMatch[1].trim();
-          content = content.replace(/^Subject:\s*.+?[\n\r]+/i, '').trim();
-        }
+      const subjectMatch = content.match(/^Subject:\s*(.+?)[\n\r]/i);
+      if (subjectMatch) {
+        subject = subjectMatch[1].trim();
+        content = content.replace(/^Subject:\s*.+?[\n\r]+/i, '').trim();
       }
 
       // Update AI config usage stats
@@ -111,12 +177,10 @@ export async function generatePersonalizedMessage(
       console.error(`AI generation attempt ${attempt}/${maxRetries} failed:`, lastError.message);
       
       if (attempt < maxRetries && isNetworkError) {
-        // Exponential backoff: 1s, 2s, 4s
         const delay = Math.pow(2, attempt - 1) * 1000;
         console.log(`Retrying in ${delay}ms...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       } else if (!isNetworkError) {
-        // Non-network error, don't retry
         break;
       }
     }
@@ -130,23 +194,21 @@ export async function generatePersonalizedMessage(
 
 // Generate messages in batch for multiple leads
 export async function generateBatchMessages(
+  teamId: string,
   leads: Lead[],
-  messageType: MessageType,
-  options?: Partial<PersonalizeOptions>
+  options?: Partial<Omit<PersonalizeOptions, 'teamId' | 'lead'>>
 ): Promise<Map<string, PersonalizedMessage>> {
   const results = new Map<string, PersonalizedMessage>();
 
-  // Process leads sequentially to respect rate limits
   for (const lead of leads) {
     try {
       const message = await generatePersonalizedMessage({
+        teamId,
         lead,
-        messageType,
         ...options,
       });
       results.set(lead.id, message);
 
-      // Add a small delay between requests to avoid rate limiting
       await new Promise((resolve) => setTimeout(resolve, 500));
     } catch (error) {
       console.error(`Failed to generate message for lead ${lead.id}:`, error);
@@ -158,8 +220,8 @@ export async function generateBatchMessages(
 
 // Regenerate a message with different parameters
 export async function regenerateMessage(
+  teamId: string,
   lead: Lead,
-  messageType: MessageType,
   previousContent: string,
   feedback?: string
 ): Promise<PersonalizedMessage> {
@@ -168,8 +230,8 @@ export async function regenerateMessage(
     : `\n\nPlease generate a different version than this:\n"${previousContent}"`;
 
   return generatePersonalizedMessage({
+    teamId,
     lead,
-    messageType,
     guardrails: {
       additionalInstructions: additionalPrompt,
     },
@@ -177,8 +239,8 @@ export async function regenerateMessage(
 }
 
 // Quick personalization without full AI (fallback)
-export function quickPersonalize(lead: Lead, messageType: MessageType): string {
-  const greeting = messageType === 'WHATSAPP' ? 'Good day! 👋' : 'Good day,';
+export function quickPersonalize(lead: Lead): string {
+  const greeting = 'Good day,';
   const ratingMention =
     lead.googleRating && lead.reviewCount
       ? `We noticed ${lead.businessName} has an excellent ${lead.googleRating}-star rating with ${lead.reviewCount} reviews on Google - that's fantastic!`
@@ -202,25 +264,89 @@ We also offer professional business email addresses to help strengthen your bran
 
 If you would like us to contact you, please reply and let us know a convenient time.
 
-Feel free to view our work at:
-https://thetinywebfactory.com
-
-The Tiny Web Factory Team`;
-
-  if (messageType === 'WHATSAPP') {
-    // Shorter version for WhatsApp
-    return `${greeting}
-
-We noticed ${lead.businessName} ${lead.googleRating ? `has great reviews (${lead.googleRating}⭐)` : 'is doing great work'} but ${lead.website ? 'could use a website refresh' : "doesn't have a website yet"}.
-
-We'd love to create a FREE draft landing page for you - no obligation! Just review it and let us know what you think.
-
-Check out our work: https://thetinywebfactory.com
-
-Interested? Just reply and we'll get started! 🚀
-
-- The Tiny Web Factory Team`;
-  }
+The Team`;
 
   return template;
+}
+
+// Generate a follow-up message for a lead (team-scoped)
+export async function generateFollowUpMessage(
+  teamId: string,
+  leadId: string,
+  previousMessageId?: string
+): Promise<{ id: string; content: string; subject?: string; status: string }> {
+  const lead = await prisma.lead.findFirst({
+    where: { id: leadId, teamId },
+  });
+
+  if (!lead) {
+    throw new Error(`Lead with id ${leadId} not found`);
+  }
+
+  let previousMessage: { content: string; subject?: string } | undefined;
+
+  if (previousMessageId) {
+    const message = await prisma.message.findFirst({
+      where: { id: previousMessageId, teamId },
+      select: { content: true, subject: true },
+    });
+
+    if (!message) {
+      throw new Error(`Message with id ${previousMessageId} not found`);
+    }
+
+    previousMessage = {
+      content: message.content,
+      subject: message.subject || undefined,
+    };
+  } else {
+    const recentMessage = await prisma.message.findFirst({
+      where: {
+        teamId,
+        leadId,
+        status: 'SENT',
+      },
+      orderBy: {
+        sentAt: 'desc',
+      },
+      select: { content: true, subject: true },
+    });
+
+    if (!recentMessage) {
+      throw new Error(`No sent message found for lead ${leadId}`);
+    }
+
+    previousMessage = {
+      content: recentMessage.content,
+      subject: recentMessage.subject || undefined,
+    };
+  }
+
+  const personalizedMessage = await generatePersonalizedMessage({
+    teamId,
+    lead,
+    templatePurpose: 'follow_up',
+    previousMessage,
+  });
+
+  const createdMessage = await prisma.message.create({
+    data: {
+      teamId,
+      leadId,
+      type: 'EMAIL',
+      content: personalizedMessage.content,
+      subject: personalizedMessage.subject,
+      status: 'DRAFT',
+      generatedBy: 'ai',
+      aiProvider: personalizedMessage.provider,
+      aiModel: personalizedMessage.model,
+    },
+  });
+
+  return {
+    id: createdMessage.id,
+    content: createdMessage.content,
+    subject: createdMessage.subject || undefined,
+    status: createdMessage.status,
+  };
 }

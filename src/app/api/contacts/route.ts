@@ -10,6 +10,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     const searchParams = request.nextUrl.searchParams;
     const search = searchParams.get('search') || '';
     const favoritesOnly = searchParams.get('favorites') === 'true';
@@ -17,6 +19,7 @@ export async function GET(request: NextRequest) {
     const contacts = await prisma.contact.findMany({
       where: {
         AND: [
+          { teamId },
           search
             ? {
                 OR: [
@@ -73,6 +76,7 @@ export async function POST(request: NextRequest) {
 
     const contact = await prisma.contact.create({
       data: {
+        teamId: session.user.teamId,
         name,
         email: email || null,
         phone: phone || null,

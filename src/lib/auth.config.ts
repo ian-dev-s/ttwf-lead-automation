@@ -4,7 +4,7 @@ import type { NextAuthConfig } from 'next-auth';
 // This file should NOT import anything that uses Node.js-specific modules
 
 // Protected routes that require authentication (dashboard routes)
-const protectedRoutes = ['/', '/leads', '/messages', '/scraper', '/settings'];
+const protectedRoutes = ['/', '/leads', '/messages', '/scraper', '/settings', '/training', '/templates'];
 
 export const authConfig: NextAuthConfig = {
   session: {
@@ -21,9 +21,15 @@ export const authConfig: NextAuthConfig = {
       const isLoggedIn = !!auth?.user;
       const isOnLogin = nextUrl.pathname === '/login';
       const isOnRegister = nextUrl.pathname === '/register';
+      const isOnSetup = nextUrl.pathname === '/setup';
       const isProtectedRoute = protectedRoutes.some(
         route => nextUrl.pathname === route || nextUrl.pathname.startsWith(route + '/')
       );
+      
+      // Always allow access to the setup page (checked server-side for eligibility)
+      if (isOnSetup) {
+        return true;
+      }
       
       // Allow access to login and register pages
       if (isOnLogin || isOnRegister) {

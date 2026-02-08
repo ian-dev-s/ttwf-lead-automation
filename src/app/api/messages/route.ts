@@ -21,6 +21,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
     const searchParams = request.nextUrl.searchParams;
     const status = searchParams.get('status') as MessageStatus | null;
     const type = searchParams.get('type') as MessageType | null;
@@ -29,7 +30,9 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '20');
 
     // Build where clause
-    const where: any = {};
+    const where: any = {
+      teamId,
+    };
     
     if (status) {
       where.status = status;
@@ -96,12 +99,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const teamId = session.user.teamId;
     const body = await request.json();
     const validatedData = createMessageSchema.parse(body);
 
     // Verify lead exists
-    const lead = await prisma.lead.findUnique({
-      where: { id: validatedData.leadId },
+    const lead = await prisma.lead.findFirst({
+      where: { id: validatedData.leadId, teamId },
     });
 
     if (!lead) {
@@ -111,6 +115,7 @@ export async function POST(request: NextRequest) {
     const message = await prisma.message.create({
       data: {
         leadId: validatedData.leadId,
+        teamId,
         type: validatedData.type,
         subject: validatedData.subject,
         content: validatedData.content,

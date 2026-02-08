@@ -1,4 +1,4 @@
-import { Lead, MessageType } from '@prisma/client';
+import { Lead, EmailTemplate } from '@prisma/client';
 
 // System prompt for message personalization
 export const MESSAGE_SYSTEM_PROMPT = `You are an expert copywriter for The Tiny Web Factory, a web design agency that helps South African businesses establish their online presence.
@@ -17,9 +17,7 @@ Key guidelines:
 - Focus on how we can help them grow
 - Be respectful of their time
 - Use South African English spelling (e.g., "favour" not "favor")
-- Keep WhatsApp messages shorter and more conversational
 - For EMAIL messages: Use HTML formatting (NOT markdown). Use <p>, <br>, <strong>, <em>, <a href="..."> tags.
-- For WhatsApp messages: Plain text only, no formatting
 
 The Tiny Web Factory offers:
 - Professional landing page websites
@@ -27,13 +25,11 @@ The Tiny Web Factory offers:
 - Free draft website for review before commitment`;
 
 // Generate the user prompt for message generation
-export function generateMessagePrompt(lead: Lead, type: MessageType): string {
+export function generateMessagePrompt(lead: Lead): string {
   const businessDetails = buildBusinessDetails(lead);
-  const format = type === 'WHATSAPP' ? 'WhatsApp' : 'email';
+  const format = 'email';
   
-  const formatGuidance = type === 'WHATSAPP' 
-    ? 'Keep it concise (under 1000 characters) and conversational. No subject line needed. Use plain text only, no formatting tags.'
-    : `Include a compelling subject line on the first line like "Subject: Your Subject Here".
+  const formatGuidance = `Include a compelling subject line on the first line like "Subject: Your Subject Here".
 IMPORTANT: Format the body using HTML tags (NOT markdown). Use:
 - <p>...</p> for paragraphs
 - <br> for line breaks within paragraphs
@@ -69,7 +65,7 @@ https://thetinywebfactory.com
 The Tiny Web Factory Team
 ---
 
-Personalize this message based on their specific details. ${type === 'WHATSAPP' ? 'Make it WhatsApp-friendly (shorter, can include appropriate emojis sparingly). Use plain text only.' : 'Format it as a professional HTML email with proper greeting and signature. Remember: Use HTML tags, NOT markdown.'}`;
+Personalize this message based on their specific details. Format it as a professional HTML email with proper greeting and signature. Remember: Use HTML tags, NOT markdown.`;
 }
 
 // Build business details string for the prompt
@@ -122,15 +118,6 @@ export const emailSubjectTemplates = [
   '{businessName} - Your Professional Website Awaits',
 ];
 
-// WhatsApp message intro variations
-export const whatsAppIntros = [
-  'Good day! 👋',
-  'Hello there!',
-  'Hi! Hope you\'re well.',
-  'Good day,',
-  'Hello!',
-];
-
 // Generate a professional email signature
 export function generateEmailSignature(): string {
   return `
@@ -162,4 +149,135 @@ export function getGuardrailsPrompt(guardrails: Record<string, unknown>): string
   }
   
   return rules.length > 0 ? `\n\nAdditional requirements:\n${rules.join('\n')}` : '';
+}
+
+// Generate follow-up prompt for subsequent outreach
+export function generateFollowUpPrompt(
+  lead: Lead,
+  previousMessageContent: string,
+  previousMessageSubject?: string
+): string {
+  const businessDetails = buildBusinessDetails(lead);
+  const format = 'email';
+  
+  const formatGuidance = `Include a compelling subject line on the first line like "Subject: Your Subject Here".
+IMPORTANT: Format the body using HTML tags (NOT markdown). Use:
+- <p>...</p> for paragraphs
+- <br> for line breaks within paragraphs
+- <strong>...</strong> for bold text
+- <em>...</em> for italic text
+- <a href="https://...">link text</a> for links
+Do NOT use markdown syntax like **bold** or [link](url).`;
+  
+  const previousSubjectText = previousMessageSubject 
+    ? `Previous subject: "${previousMessageSubject}"\n`
+    : '';
+  
+  return `Write a polite follow-up ${format} message to this business:
+
+${businessDetails}
+
+${previousSubjectText}Previous message sent:
+---
+${previousMessageContent}
+---
+
+${formatGuidance}
+
+Guidelines for the follow-up:
+- Reference the previous outreach naturally without repeating it verbatim
+- Be shorter and more concise than the initial outreach
+- Maintain professionalism and warmth
+- Gently remind them of the offer without being pushy
+- Keep the tone consistent with the previous message
+- Format it as a professional HTML email with proper greeting and signature. Remember: Use HTML tags, NOT markdown.`;
+}
+
+// Build system prompt from EmailTemplate
+export function buildSystemPromptFromTemplate(template: EmailTemplate): string {
+  let systemPrompt = template.systemPrompt;
+  
+  // Add guardrails from template fields
+  const guardrails: string[] = [];
+  
+  if (template.tone) {
+    guardrails.push(`Tone: ${template.tone}`);
+  }
+  
+  if (template.maxLength) {
+    guardrails.push(`Maximum length: ${template.maxLength} characters`);
+  }
+  
+  if (template.mustInclude && template.mustInclude.length > 0) {
+    guardrails.push(`Must include: ${template.mustInclude.join(', ')}`);
+  }
+  
+  if (template.avoidTopics && template.avoidTopics.length > 0) {
+    guardrails.push(`Avoid topics: ${template.avoidTopics.join(', ')}`);
+  }
+  
+  if (template.bodyTemplate) {
+    guardrails.push(`Base template to personalize from:\n${template.bodyTemplate}`);
+  }
+  
+  if (guardrails.length > 0) {
+    systemPrompt += '\n\nAdditional requirements:\n' + guardrails.join('\n');
+  }
+  
+  return systemPrompt;
+}
+
+// Enhanced system prompt that incorporates AI training data
+export function buildEnhancedSystemPrompt(
+  template: EmailTemplate | null,
+  training: {
+    aiTone?: string | null;
+    aiWritingStyle?: string | null;
+    aiCustomInstructions?: string | null;
+    knowledgeItems?: { title: string; content: string }[];
+    sampleResponses?: { customerQuestion: string; preferredResponse: string }[];
+  }
+): string {
+  // Start with template system prompt or default
+  let systemPrompt = template
+    ? buildSystemPromptFromTemplate(template)
+    : MESSAGE_SYSTEM_PROMPT;
+
+  // Add AI personality settings
+  const personality: string[] = [];
+  
+  if (training.aiTone) {
+    personality.push(`Tone: ${training.aiTone}`);
+  }
+  
+  if (training.aiWritingStyle) {
+    personality.push(`Writing style: ${training.aiWritingStyle}`);
+  }
+  
+  if (personality.length > 0) {
+    systemPrompt += '\n\nAI Personality:\n' + personality.join('\n');
+  }
+
+  // Add custom instructions
+  if (training.aiCustomInstructions) {
+    systemPrompt += '\n\nCustom Instructions:\n' + training.aiCustomInstructions;
+  }
+
+  // Add knowledge base
+  if (training.knowledgeItems && training.knowledgeItems.length > 0) {
+    systemPrompt += '\n\nBusiness Knowledge Base (use this information to answer questions and personalize messages):';
+    for (const item of training.knowledgeItems) {
+      systemPrompt += `\n\n### ${item.title}\n${item.content}`;
+    }
+  }
+
+  // Add sample responses
+  if (training.sampleResponses && training.sampleResponses.length > 0) {
+    systemPrompt += '\n\nSample Responses (use these as style guides for how to respond):';
+    for (const sample of training.sampleResponses) {
+      systemPrompt += `\n\nCustomer: "${sample.customerQuestion}"\nPreferred Response: "${sample.preferredResponse}"`;
+    }
+  }
+
+  return systemPrompt;
 }

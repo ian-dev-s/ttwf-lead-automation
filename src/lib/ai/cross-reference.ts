@@ -114,6 +114,7 @@ The JSON response should have this structure:
  * Cross-reference and validate data from multiple sources using AI
  */
 export async function crossReferenceWithAI(
+  teamId: string,
   sources: DataSource[],
   expectedBusinessName?: string
 ): Promise<ValidationResult> {
@@ -127,7 +128,7 @@ export async function crossReferenceWithAI(
   
   const prompt = buildCrossReferencePrompt(sources, expectedBusinessName);
   
-  const model = getLanguageModel({
+  const model = await getLanguageModel(teamId, {
     provider: 'OPENROUTER',
     model: 'google/gemini-3-flash-preview',
   });

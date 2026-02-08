@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { getCitiesForCountry, SUPPORTED_COUNTRIES } from '@/lib/constants';
+import { SUPPORTED_COUNTRIES } from '@/lib/constants';
 import { prisma } from '@/lib/db';
 import { DEFAULT_COUNTRY_CODE, runScrapingJob, SA_CITIES, scheduleScrapingJob, TARGET_CATEGORIES } from '@/lib/scraper/scheduler';
 import { NextRequest, NextResponse } from 'next/server';
@@ -24,12 +24,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     const searchParams = request.nextUrl.searchParams;
     const status = searchParams.get('status');
     const countryFilter = searchParams.get('country');
     const limit = parseInt(searchParams.get('limit') || '10');
 
-    const where: Record<string, unknown> = {};
+    const where: Record<string, unknown> = { teamId };
     if (status) {
       where.status = status;
     }
@@ -105,8 +107,11 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const teamId = session.user.teamId;
+
     // Schedule the job with country
     const jobId = await scheduleScrapingJob({
+      teamId,
       ...jobData,
       country: countryCode,
       scheduledFor: scheduledFor ? new Date(scheduledFor) : new Date(),

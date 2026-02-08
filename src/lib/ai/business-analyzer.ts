@@ -103,11 +103,12 @@ Lead scoring guidelines:
  * Analyze a business using AI to understand what they do and qualify them as a lead
  */
 export async function analyzeBusinessWithAI(
+  teamId: string,
   data: BusinessData
 ): Promise<BusinessAnalysis> {
   const prompt = buildAnalysisPrompt(data);
   
-  const model = getLanguageModel({
+  const model = await getLanguageModel(teamId, {
     provider: 'OPENROUTER',
     model: 'google/gemini-3-flash-preview',
   });

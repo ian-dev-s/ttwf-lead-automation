@@ -24,13 +24,16 @@ export async function GET(_request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     const configs = await prisma.aIConfig.findMany({
+      where: { teamId },
       orderBy: { createdAt: 'desc' },
     });
 
     // Get status for OpenRouter
     const providers: SimpleProvider[] = ['OPENROUTER'];
-    const providerStatuses = providers.map(p => getProviderStatus(p));
+    const providerStatuses = providers.map(p => getProviderStatus(teamId, p));
 
     return NextResponse.json({
       configs,
@@ -61,19 +64,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const teamId = session.user.teamId;
+
     const body = await request.json();
     const validatedData = aiConfigSchema.parse(body);
 
     // If this config is set as active, deactivate others
     if (validatedData.isActive) {
       await prisma.aIConfig.updateMany({
-        where: { isActive: true },
+        where: { teamId, isActive: true },
         data: { isActive: false },
       });
     }
 
     const config = await prisma.aIConfig.create({
       data: {
+        teamId,
         name: validatedData.name,
         provider: validatedData.provider as any,
         model: validatedData.model,
@@ -114,6 +120,8 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
+    const teamId = session.user.teamId;
+
     const body = await request.json();
     const { id, ...updateData } = body;
 
@@ -123,10 +131,19 @@ export async function PATCH(request: NextRequest) {
 
     const validatedData = aiConfigSchema.partial().parse(updateData);
 
+    // Check if config exists and belongs to team
+    const existingConfig = await prisma.aIConfig.findFirst({
+      where: { id, teamId },
+    });
+
+    if (!existingConfig) {
+      return NextResponse.json({ error: 'Config not found' }, { status: 404 });
+    }
+
     // If setting as active, deactivate others
     if (validatedData.isActive) {
       await prisma.aIConfig.updateMany({
-        where: { isActive: true, id: { not: id } },
+        where: { teamId, isActive: true, id: { not: id } },
         data: { isActive: false },
       });
     }
@@ -167,11 +184,21 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
+    const teamId = session.user.teamId;
+
     const body = await request.json();
     const { id } = body;
 
     if (!id) {
       return NextResponse.json({ error: 'Config ID is required' }, { status: 400 });
+    }
+
+    const existingConfig = await prisma.aIConfig.findFirst({
+      where: { id, teamId },
+    });
+
+    if (!existingConfig) {
+      return NextResponse.json({ error: 'Config not found' }, { status: 404 });
     }
 
     await prisma.aIConfig.delete({

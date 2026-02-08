@@ -8,9 +8,21 @@ import { Loader2 } from 'lucide-react';
 import { signIn } from 'next-auth/react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 
 export default function LoginPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-muted/50">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    }>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get('callbackUrl') || '/';
@@ -19,6 +31,23 @@ export default function LoginPage() {
   const passwordRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const setupComplete = searchParams.get('setup') === 'complete';
+
+  // Check if setup is needed and redirect
+  useEffect(() => {
+    async function checkSetup() {
+      try {
+        const res = await fetch('/api/setup');
+        const result = await res.json();
+        if (result.needsSetup) {
+          router.replace('/setup');
+        }
+      } catch {
+        // If check fails, continue with login
+      }
+    }
+    checkSetup();
+  }, [router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,6 +93,11 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">
+            {setupComplete && (
+              <div className="bg-green-500/10 text-green-700 dark:text-green-400 text-sm p-3 rounded-md">
+                Setup completed successfully! You can now sign in.
+              </div>
+            )}
             {error && (
               <div className="bg-destructive/10 text-destructive text-sm p-3 rounded-md">
                 {error}

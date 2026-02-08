@@ -32,6 +32,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     const searchParams = request.nextUrl.searchParams;
     const status = searchParams.get('status') as LeadStatus | null;
     const page = parseInt(searchParams.get('page') || '1');
@@ -41,7 +43,9 @@ export async function GET(request: NextRequest) {
     const search = searchParams.get('search');
 
     // Build where clause
-    const where: any = {};
+    const where: any = {
+      teamId,
+    };
     
     if (status) {
       where.status = status;
@@ -104,6 +108,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     // Check permissions
     if (session.user.role === 'VIEWER') {
       return NextResponse.json(
@@ -135,6 +141,7 @@ export async function POST(request: NextRequest) {
         website: validatedData.website || null,
         score,
         source: validatedData.source || 'manual',
+        teamId,
         createdById: session.user.id,
       },
     });

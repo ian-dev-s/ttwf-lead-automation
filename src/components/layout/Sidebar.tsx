@@ -12,11 +12,13 @@ import {
 import { cn } from '@/lib/utils';
 import {
     BookUser,
+    Brain,
     ChevronDown,
+    FileText,
     History,
     LayoutDashboard,
     LogOut,
-    MessageSquare,
+    Mail,
     Search,
     Settings,
     Users,
@@ -28,7 +30,9 @@ import { usePathname } from 'next/navigation';
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Leads', href: '/leads', icon: Users },
-  { name: 'Messages', href: '/messages', icon: MessageSquare },
+  { name: 'Email', href: '/messages', icon: Mail },
+  { name: 'Templates', href: '/templates', icon: FileText },
+  { name: 'AI Training', href: '/training', icon: Brain },
   { name: 'Contacts', href: '/contacts', icon: BookUser },
   { name: 'Scraper', href: '/scraper', icon: Search },
   { name: 'History', href: '/history', icon: History },

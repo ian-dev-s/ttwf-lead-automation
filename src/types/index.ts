@@ -144,8 +144,8 @@ export interface DashboardStats {
   leadsByStatus: Record<LeadStatus, number>;
 }
 
-// System settings type
-export interface SystemSettingsInput {
+// Team settings input type
+export interface TeamSettingsInput {
   dailyLeadTarget?: number;
   leadGenerationEnabled?: boolean;
   scrapeDelayMs?: number;

@@ -128,7 +128,7 @@ export class GoogleMapsScraper {
       
       try {
         await this.browser.close();
-      } catch (e) {
+      } catch {
         // Ignore close errors (browser might already be closed)
       }
       this.browser = null;

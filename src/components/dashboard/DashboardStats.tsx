@@ -42,7 +42,7 @@ interface DashboardStatsProps {
   userName: string;
 }
 
-export function DashboardStats({ initialStats, userName }: DashboardStatsProps) {
+export function DashboardStats({ initialStats, userName: _userName }: DashboardStatsProps) {
   const [stats, setStats] = useState<DashboardStats>(initialStats);
   const [isPending, startTransition] = useTransition();
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);

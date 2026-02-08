@@ -10,6 +10,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get('page') || '1');
     const limit = parseInt(searchParams.get('limit') || '50');
@@ -19,7 +21,7 @@ export async function GET(request: NextRequest) {
     const skip = (page - 1) * limit;
 
     // Build where clause based on filters
-    const where: any = {};
+    const where: any = { teamId };
     
     if (filter === 'prospects') {
       where.isGoodProspect = true;
@@ -51,6 +53,7 @@ export async function GET(request: NextRequest) {
 
     // Get statistics
     const stats = await prisma.analyzedBusiness.groupBy({
+      where: { teamId },
       by: ['isGoodProspect', 'wasConverted'],
       _count: true,
     });
@@ -89,10 +92,12 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     const { searchParams } = new URL(request.url);
     const olderThan = searchParams.get('olderThan'); // Days
 
-    let where: any = {};
+    const where: Record<string, unknown> = { teamId };
     
     if (olderThan) {
       const daysAgo = new Date();

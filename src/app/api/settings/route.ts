@@ -15,6 +15,22 @@ const settingsSchema = z.object({
   blacklistedIndustries: z.array(z.string()).optional(),
   targetCities: z.array(z.string()).optional(),
   autoGenerateMessages: z.boolean().optional(),
+  // Branding settings
+  companyName: z.string().optional(),
+  companyWebsite: z.string().url().optional(),
+  companyTagline: z.string().optional(),
+  logoUrl: z.string().url().nullable().optional(),
+  bannerUrl: z.string().url().nullable().optional(),
+  whatsappPhone: z.string().nullable().optional(),
+  socialFacebookUrl: z.string().url().nullable().optional(),
+  socialInstagramUrl: z.string().url().nullable().optional(),
+  socialLinkedinUrl: z.string().url().nullable().optional(),
+  socialTwitterUrl: z.string().url().nullable().optional(),
+  socialTiktokUrl: z.string().url().nullable().optional(),
+  // AI Training settings
+  aiTone: z.string().nullable().optional(),
+  aiWritingStyle: z.string().nullable().optional(),
+  aiCustomInstructions: z.string().nullable().optional(),
 });
 
 // GET /api/settings - Get system settings
@@ -25,15 +41,17 @@ export async function GET(_request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     // Get or create default settings
-    let settings = await prisma.systemSettings.findUnique({
-      where: { id: 'default' },
+    let settings = await prisma.teamSettings.findUnique({
+      where: { teamId },
     });
 
     if (!settings) {
-      settings = await prisma.systemSettings.create({
+      settings = await prisma.teamSettings.create({
         data: {
-          id: 'default',
+          teamId,
           targetIndustries: [
             'Plumber',
             'Electrician',
@@ -76,6 +94,8 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     // Only admins can update settings
     if (session.user.role !== 'ADMIN') {
       return NextResponse.json(
@@ -87,11 +107,11 @@ export async function PATCH(request: NextRequest) {
     const body = await request.json();
     const validatedData = settingsSchema.parse(body);
 
-    const settings = await prisma.systemSettings.upsert({
-      where: { id: 'default' },
+    const settings = await prisma.teamSettings.upsert({
+      where: { teamId },
       update: validatedData,
       create: {
-        id: 'default',
+        teamId,
         ...validatedData,
         targetIndustries: validatedData.targetIndustries || [],
         targetCities: validatedData.targetCities || [],

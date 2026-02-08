@@ -22,10 +22,11 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
     const { id } = await params;
 
-    const message = await prisma.message.findUnique({
-      where: { id },
+    const message = await prisma.message.findFirst({
+      where: { id, teamId },
       include: {
         lead: true,
       },
@@ -63,12 +64,13 @@ export async function PATCH(
       );
     }
 
+    const teamId = session.user.teamId;
     const { id } = await params;
     const body = await request.json();
     const validatedData = updateMessageSchema.parse(body);
 
-    const currentMessage = await prisma.message.findUnique({
-      where: { id },
+    const currentMessage = await prisma.message.findFirst({
+      where: { id, teamId },
       include: { lead: true },
     });
 
@@ -95,6 +97,7 @@ export async function PATCH(
       await prisma.statusHistory.create({
         data: {
           leadId: currentMessage.leadId,
+          teamId,
           fromStatus: currentMessage.lead.status,
           toStatus: LeadStatus.CONTACTED,
           changedById: session.user.id,
@@ -145,7 +148,16 @@ export async function DELETE(
       );
     }
 
+    const teamId = session.user.teamId;
     const { id } = await params;
+
+    const message = await prisma.message.findFirst({
+      where: { id, teamId },
+    });
+
+    if (!message) {
+      return NextResponse.json({ error: 'Message not found' }, { status: 404 });
+    }
 
     await prisma.message.delete({
       where: { id },

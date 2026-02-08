@@ -1,5 +1,6 @@
 import { Sidebar } from '@/components/layout/Sidebar';
 import { auth } from '@/lib/auth';
+import { prisma } from '@/lib/db';
 import { redirect } from 'next/navigation';
 
 export default async function DashboardLayout({
@@ -7,6 +8,12 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // Check if initial setup is needed (no teams exist)
+  const teamCount = await prisma.team.count();
+  if (teamCount === 0) {
+    redirect('/setup');
+  }
+
   const session = await auth();
 
   if (!session?.user) {

@@ -10,6 +10,8 @@ export async function DELETE() {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     // Only admins can delete leads in bulk
     if (session.user.role !== 'ADMIN') {
       return NextResponse.json(
@@ -20,7 +22,7 @@ export async function DELETE() {
 
     // Count leads to be deleted
     const count = await prisma.lead.count({
-      where: { status: 'NEW' },
+      where: { status: 'NEW', teamId },
     });
 
     if (count === 0) {
@@ -36,6 +38,7 @@ export async function DELETE() {
       where: {
         lead: {
           status: 'NEW',
+          teamId,
         },
       },
     });
@@ -45,13 +48,14 @@ export async function DELETE() {
       where: {
         lead: {
           status: 'NEW',
+          teamId,
         },
       },
     });
 
     // Delete the leads
     const result = await prisma.lead.deleteMany({
-      where: { status: 'NEW' },
+      where: { status: 'NEW', teamId },
     });
 
     return NextResponse.json({
@@ -76,8 +80,10 @@ export async function GET() {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     const count = await prisma.lead.count({
-      where: { status: 'NEW' },
+      where: { status: 'NEW', teamId },
     });
 
     return NextResponse.json({ count });

@@ -14,8 +14,10 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const job = await prisma.scrapingJob.findUnique({
-      where: { id: params.id },
+    const teamId = session.user.teamId;
+
+    const job = await prisma.scrapingJob.findFirst({
+      where: { id: params.id, teamId },
     });
 
     if (!job) {
@@ -51,8 +53,10 @@ export async function DELETE(
       );
     }
 
-    const job = await prisma.scrapingJob.findUnique({
-      where: { id: params.id },
+    const teamId = session.user.teamId;
+
+    const job = await prisma.scrapingJob.findFirst({
+      where: { id: params.id, teamId },
     });
 
     if (!job) {
@@ -115,9 +119,11 @@ export async function PATCH(
       body = { action: 'cancel' };
     }
     
+    const teamId = session.user.teamId;
+
     if (body.action === 'cancel') {
-      const job = await prisma.scrapingJob.findUnique({
-        where: { id: params.id },
+      const job = await prisma.scrapingJob.findFirst({
+        where: { id: params.id, teamId },
       });
 
       if (!job) {

@@ -4,6 +4,7 @@ import { Header } from '@/components/layout/Header';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -15,8 +16,8 @@ import {
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { modelOptions } from '@/lib/ai/providers';
-import { Brain, Check, ExternalLink, Key, Loader2, MessageSquare, Save, Search } from 'lucide-react';
+import { modelOptions } from '@/lib/ai/constants';
+import { Brain, Check, Key, Loader2, Mail, MessageSquare, Palette, Save, Search, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 interface ProviderStatus {
@@ -25,10 +26,37 @@ interface ProviderStatus {
   isAvailable: boolean;
   maskedToken: string | null;
   setupUrl: string;
-  envKey: string;
 }
 
-interface SystemSettings {
+interface EmailConfig {
+  smtp: {
+    host: string | null;
+    port: number;
+    secure: boolean;
+    user: string | null;
+    from: string | null;
+    debugMode: boolean;
+    debugAddress: string | null;
+    isConfigured: boolean;
+  };
+  imap: {
+    host: string | null;
+    port: number;
+    secure: boolean;
+    user: string | null;
+    isConfigured: boolean;
+  };
+}
+
+interface ApiKey {
+  id: string;
+  provider: string;
+  label: string | null;
+  maskedKey: string | null;
+  isActive: boolean;
+}
+
+interface TeamSettingsState {
   dailyLeadTarget: number;
   leadGenerationEnabled: boolean;
   scrapeDelayMs: number;
@@ -39,6 +67,18 @@ interface SystemSettings {
   blacklistedIndustries: string[];
   targetCities: string[];
   autoGenerateMessages: boolean;
+  // Branding
+  companyName: string;
+  companyWebsite: string;
+  companyTagline: string;
+  logoUrl: string | null;
+  bannerUrl: string | null;
+  whatsappPhone: string | null;
+  socialFacebookUrl: string | null;
+  socialInstagramUrl: string | null;
+  socialLinkedinUrl: string | null;
+  socialTwitterUrl: string | null;
+  socialTiktokUrl: string | null;
 }
 
 interface AIConfig {
@@ -52,16 +92,49 @@ interface AIConfig {
 }
 
 export default function SettingsPage() {
-  const [settings, setSettings] = useState<SystemSettings | null>(null);
+  const [settings, setSettings] = useState<TeamSettingsState | null>(null);
   const [aiConfigs, setAIConfigs] = useState<AIConfig[]>([]);
   const [providerStatuses, setProviderStatuses] = useState<ProviderStatus[]>([]);
+  const [emailStatus, setEmailStatus] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [isSendingTest, setIsSendingTest] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // AI config form state
   const [selectedProvider, setSelectedProvider] = useState<string>('CURSOR');
   const [selectedModel, setSelectedModel] = useState(modelOptions[0].value);
   const [temperature, setTemperature] = useState(0.7);
+
+  // Email config state
+  const [, setEmailConfig] = useState<EmailConfig | null>(null);
+  const [smtpForm, setSmtpForm] = useState({
+    host: '',
+    port: 587,
+    secure: false,
+    username: '',
+    password: '',
+    from: '',
+    debugMode: false,
+    debugAddress: '',
+  });
+  const [imapForm, setImapForm] = useState({
+    host: '',
+    port: 993,
+    secure: true,
+    username: '',
+    password: '',
+  });
+  const [isSavingEmail, setIsSavingEmail] = useState(false);
+
+  // API keys state
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
+  const [newApiKey, setNewApiKey] = useState({
+    provider: 'OPENROUTER',
+    apiKey: '',
+    label: '',
+  });
 
   useEffect(() => {
     fetchData();
@@ -69,17 +142,47 @@ export default function SettingsPage() {
 
   const fetchData = async () => {
     try {
-      const [settingsRes, aiRes] = await Promise.all([
+      const [settingsRes, aiRes, emailRes, emailConfigRes, apiKeysRes] = await Promise.all([
         fetch('/api/settings'),
         fetch('/api/ai/config'),
+        fetch('/api/email/status'),
+        fetch('/api/settings/email-config'),
+        fetch('/api/ai/keys'),
       ]);
 
       const settingsData = await settingsRes.json();
       const aiData = await aiRes.json();
+      const emailData = emailRes.ok ? await emailRes.json() : null;
+      const emailConfigData = emailConfigRes.ok ? await emailConfigRes.json() : null;
+      const apiKeysData = apiKeysRes.ok ? await apiKeysRes.json() : [];
 
       setSettings(settingsData);
       setAIConfigs(aiData.configs || []);
       setProviderStatuses(aiData.providerStatuses || []);
+      setEmailStatus(emailData);
+      setEmailConfig(emailConfigData);
+      setApiKeys(apiKeysData);
+      
+      // Initialize email forms from config (don't load masked secrets)
+      if (emailConfigData) {
+        setSmtpForm({
+          host: emailConfigData.smtp.host || '',
+          port: emailConfigData.smtp.port || 587,
+          secure: emailConfigData.smtp.secure || false,
+          username: '', // Don't load masked username
+          password: '', // Never load password
+          from: emailConfigData.smtp.from || '',
+          debugMode: emailConfigData.smtp.debugMode || false,
+          debugAddress: emailConfigData.smtp.debugAddress || '',
+        });
+        setImapForm({
+          host: emailConfigData.imap.host || '',
+          port: emailConfigData.imap.port || 993,
+          secure: emailConfigData.imap.secure !== false,
+          username: '', // Don't load masked username
+          password: '', // Never load password
+        });
+      }
       
       // Set default provider to first available
       if (aiData.providerStatuses?.length > 0) {
@@ -180,6 +283,185 @@ export default function SettingsPage() {
     }
   };
 
+  const handleTestConnection = async () => {
+    setIsTestingConnection(true);
+    setTestResult(null);
+    try {
+      const response = await fetch('/api/email/test-connection', {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+      
+      if (response.ok && data.success) {
+        setTestResult({ success: true, message: data.message || 'Connection successful!' });
+        // Refresh email status
+        await fetchData();
+      } else {
+        setTestResult({ success: false, message: data.message || data.error || 'Connection failed' });
+      }
+    } catch {
+      setTestResult({ success: false, message: 'Failed to test connection' });
+    } finally {
+      setIsTestingConnection(false);
+    }
+  };
+
+  const handleSendTestEmail = async () => {
+    setIsSendingTest(true);
+    setTestResult(null);
+    try {
+      const response = await fetch('/api/email/send-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const data = await response.json();
+      
+      if (response.ok && data.success) {
+        setTestResult({ success: true, message: 'Test email sent successfully!' });
+      } else {
+        setTestResult({ success: false, message: data.message || data.error || 'Failed to send test email' });
+      }
+    } catch {
+      setTestResult({ success: false, message: 'Failed to send test email' });
+    } finally {
+      setIsSendingTest(false);
+    }
+  };
+
+  const handleSaveEmailConfig = async () => {
+    setIsSavingEmail(true);
+    try {
+      const payload: Record<string, unknown> = {
+        smtpHost: smtpForm.host || null,
+        smtpPort: smtpForm.port,
+        smtpSecure: smtpForm.secure,
+        emailFrom: smtpForm.from || null,
+        emailDebugMode: smtpForm.debugMode,
+        emailDebugAddress: smtpForm.debugAddress || null,
+        imapHost: imapForm.host || null,
+        imapPort: imapForm.port,
+        imapSecure: imapForm.secure,
+      };
+
+      // Only include username/password if they were provided
+      // If password is provided, both username and password must be sent together
+      if (smtpForm.password) {
+        payload.smtpUser = smtpForm.username;
+        payload.smtpPass = smtpForm.password;
+      } else if (smtpForm.username) {
+        // If only username is provided without password, update username only
+        // Note: This requires the password to already be set in the database
+        payload.smtpUser = smtpForm.username;
+      }
+
+      if (imapForm.password) {
+        payload.imapUser = imapForm.username;
+        payload.imapPass = imapForm.password;
+      } else if (imapForm.username) {
+        // If only username is provided without password, update username only
+        payload.imapUser = imapForm.username;
+      }
+
+      const response = await fetch('/api/settings/email-config', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to save email config');
+      }
+
+      const data = await response.json();
+      setEmailConfig(data);
+      
+      // Clear password fields after successful save
+      setSmtpForm(prev => ({ ...prev, password: '' }));
+      setImapForm(prev => ({ ...prev, password: '' }));
+
+      // Refresh email status
+      const emailRes = await fetch('/api/email/status');
+      if (emailRes.ok) {
+        const emailData = await emailRes.json();
+        setEmailStatus(emailData);
+      }
+    } catch (error) {
+      console.error('Error saving email config:', error);
+      setTestResult({ 
+        success: false, 
+        message: error instanceof Error ? error.message : 'Failed to save email config' 
+      });
+    } finally {
+      setIsSavingEmail(false);
+    }
+  };
+
+  const handleAddApiKey = async () => {
+    if (!newApiKey.apiKey.trim()) {
+      setTestResult({ success: false, message: 'API key is required' });
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const response = await fetch('/api/ai/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: newApiKey.provider,
+          apiKey: newApiKey.apiKey,
+          label: newApiKey.label || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to add API key');
+      }
+
+      // Reset form and refresh
+      setNewApiKey({ provider: 'OPENROUTER', apiKey: '', label: '' });
+      await fetchData();
+    } catch (error) {
+      console.error('Error adding API key:', error);
+      setTestResult({ 
+        success: false, 
+        message: error instanceof Error ? error.message : 'Failed to add API key' 
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteApiKey = async (id: string) => {
+    setIsSaving(true);
+    try {
+      const response = await fetch('/api/ai/keys', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to delete API key');
+      }
+
+      await fetchData();
+    } catch (error) {
+      console.error('Error deleting API key:', error);
+      setTestResult({ 
+        success: false, 
+        message: error instanceof Error ? error.message : 'Failed to delete API key' 
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex flex-col h-full">
@@ -208,6 +490,14 @@ export default function SettingsPage() {
               <Search className="h-4 w-4" />
               Scraping Settings
             </TabsTrigger>
+            <TabsTrigger value="email" className="gap-2">
+              <Mail className="h-4 w-4" />
+              Email
+            </TabsTrigger>
+            <TabsTrigger value="branding" className="gap-2">
+              <Palette className="h-4 w-4" />
+              Branding
+            </TabsTrigger>
             <TabsTrigger value="messages" className="gap-2">
               <MessageSquare className="h-4 w-4" />
               Message Settings
@@ -216,7 +506,7 @@ export default function SettingsPage() {
 
           {/* AI Configuration Tab */}
           <TabsContent value="ai" className="space-y-4">
-            {/* Provider Status Cards */}
+            {/* API Keys Management */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -224,57 +514,110 @@ export default function SettingsPage() {
                   API Keys
                 </CardTitle>
                 <CardDescription>
-                  Configure your AI provider API keys in the <code className="bg-muted px-1.5 py-0.5 rounded text-xs">.env</code> file
+                  Manage your AI provider API keys
                 </CardDescription>
               </CardHeader>
-              <CardContent>
-                <div className="grid gap-4">
-                  {providerStatuses.map((status) => (
-                    <div
-                      key={status.provider}
-                      className={`flex items-center justify-between p-4 rounded-lg border ${
-                        status.isAvailable 
-                          ? 'border-green-500/30 bg-green-500/5' 
-                          : 'border-muted'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className={`w-2 h-2 rounded-full ${
-                          status.isAvailable ? 'bg-green-500' : 'bg-muted-foreground/30'
-                        }`} />
-                        <div>
-                          <div className="font-medium">{status.name}</div>
-                          <code className="text-xs text-muted-foreground">
-                            {status.envKey}
-                          </code>
+              <CardContent className="space-y-6">
+                {/* Existing Keys */}
+                {apiKeys.length > 0 && (
+                  <div className="space-y-2">
+                    <Label className="text-sm font-medium">Configured Keys</Label>
+                    <div className="grid gap-3">
+                      {apiKeys.map((key) => (
+                        <div
+                          key={key.id}
+                          className={`flex items-center justify-between p-4 rounded-lg border ${
+                            key.isActive 
+                              ? 'border-green-500/30 bg-green-500/5' 
+                              : 'border-muted'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className={`w-2 h-2 rounded-full ${
+                              key.isActive ? 'bg-green-500' : 'bg-muted-foreground/30'
+                            }`} />
+                            <div>
+                              <div className="font-medium">{key.label || key.provider}</div>
+                              <code className="text-xs bg-muted px-2 py-1 rounded font-mono">
+                                {key.maskedKey || '••••••••'}
+                              </code>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            {key.isActive && (
+                              <Badge variant="default" className="bg-green-600">
+                                <Check className="h-3 w-3 mr-1" />
+                                Active
+                              </Badge>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDeleteApiKey(key.id)}
+                              disabled={isSaving}
+                              className="text-destructive hover:text-destructive"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        {status.isAvailable ? (
-                          <>
-                            <code className="text-xs bg-muted px-2 py-1 rounded font-mono">
-                              {status.maskedToken}
-                            </code>
-                            <Badge variant="default" className="bg-green-600">
-                              <Check className="h-3 w-3 mr-1" />
-                              Connected
-                            </Badge>
-                          </>
-                        ) : (
-                          <a
-                            href={status.setupUrl}
-                            target="_blank"
-                            rel="noopener"
-                            className="text-sm text-blue-500 hover:text-blue-400 flex items-center gap-1"
-                          >
-                            Get API Key
-                            <ExternalLink className="h-3 w-3" />
-                          </a>
-                        )}
-                      </div>
+                      ))}
                     </div>
-                  ))}
+                  </div>
+                )}
+
+                {/* Add New Key Form */}
+                <div className="pt-4 border-t space-y-4">
+                  <Label className="text-sm font-medium">Add New API Key</Label>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="space-y-2">
+                      <Label>Provider</Label>
+                      <Select
+                        value={newApiKey.provider}
+                        onValueChange={(value) => setNewApiKey(prev => ({ ...prev, provider: value }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="OPENROUTER">OpenRouter</SelectItem>
+                          <SelectItem value="OPENAI">OpenAI</SelectItem>
+                          <SelectItem value="ANTHROPIC">Anthropic</SelectItem>
+                          <SelectItem value="GOOGLE">Google</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>API Key</Label>
+                      <Input
+                        type="password"
+                        value={newApiKey.apiKey}
+                        onChange={(e) => setNewApiKey(prev => ({ ...prev, apiKey: e.target.value }))}
+                        placeholder="sk-..."
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Label (optional)</Label>
+                      <Input
+                        value={newApiKey.label}
+                        onChange={(e) => setNewApiKey(prev => ({ ...prev, label: e.target.value }))}
+                        placeholder="My API Key"
+                      />
+                    </div>
+                  </div>
+                  <Button onClick={handleAddApiKey} disabled={isSaving || !newApiKey.apiKey.trim()}>
+                    {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    Add Key
+                  </Button>
                 </div>
+
+                {apiKeys.length === 0 && (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Key className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                    <p>No API keys configured</p>
+                    <p className="text-sm">Add your API keys above to get started</p>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -395,7 +738,7 @@ export default function SettingsPage() {
                   <div className="text-center py-8 text-muted-foreground">
                     <Key className="h-12 w-12 mx-auto mb-4 opacity-50" />
                     <p>No API keys configured</p>
-                    <p className="text-sm">Add your API keys to the .env file to get started</p>
+                    <p className="text-sm">Go to Settings to configure</p>
                   </div>
                 )}
               </CardContent>
@@ -522,6 +865,518 @@ export default function SettingsPage() {
                 </Button>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* Email Tab */}
+          <TabsContent value="email" className="space-y-4">
+            {/* SMTP Configuration */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Mail className="h-5 w-5" />
+                  SMTP Configuration
+                </CardTitle>
+                <CardDescription>
+                  Configure your SMTP email settings
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>SMTP Host</Label>
+                    <Input
+                      value={smtpForm.host}
+                      onChange={(e) => setSmtpForm(prev => ({ ...prev, host: e.target.value }))}
+                      placeholder="smtp.gmail.com"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>SMTP Port</Label>
+                    <Input
+                      type="number"
+                      value={smtpForm.port}
+                      onChange={(e) => setSmtpForm(prev => ({ ...prev, port: parseInt(e.target.value) || 587 }))}
+                      placeholder="587"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>SMTP Username</Label>
+                    <Input
+                      value={smtpForm.username}
+                      onChange={(e) => setSmtpForm(prev => ({ ...prev, username: e.target.value }))}
+                      placeholder="your-email@gmail.com"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>SMTP Password</Label>
+                    <Input
+                      type="password"
+                      value={smtpForm.password}
+                      onChange={(e) => setSmtpForm(prev => ({ ...prev, password: e.target.value }))}
+                      placeholder="Leave empty to keep current password"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>From Address</Label>
+                    <Input
+                      type="email"
+                      value={smtpForm.from}
+                      onChange={(e) => setSmtpForm(prev => ({ ...prev, from: e.target.value }))}
+                      placeholder="noreply@example.com"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Debug Address</Label>
+                    <Input
+                      type="email"
+                      value={smtpForm.debugAddress}
+                      onChange={(e) => setSmtpForm(prev => ({ ...prev, debugAddress: e.target.value }))}
+                      placeholder="debug@example.com"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label>Use Secure Connection (TLS/SSL)</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Enable for ports 465 (SSL) or 587 (TLS)
+                    </p>
+                  </div>
+                  <Switch
+                    checked={smtpForm.secure}
+                    onCheckedChange={(checked) => setSmtpForm(prev => ({ ...prev, secure: checked }))}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label>Debug Mode</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Send all emails to debug address instead of recipients
+                    </p>
+                  </div>
+                  <Switch
+                    checked={smtpForm.debugMode}
+                    onCheckedChange={(checked) => setSmtpForm(prev => ({ ...prev, debugMode: checked }))}
+                  />
+                </div>
+                <Button onClick={handleSaveEmailConfig} disabled={isSavingEmail}>
+                  {isSavingEmail && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                  <Save className="h-4 w-4 mr-2" />
+                  Save Email Config
+                </Button>
+              </CardContent>
+            </Card>
+
+            {/* IMAP Configuration */}
+            <Card>
+              <CardHeader>
+                <CardTitle>IMAP Configuration</CardTitle>
+                <CardDescription>
+                  Configure IMAP settings for reading emails
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>IMAP Host</Label>
+                    <Input
+                      value={imapForm.host}
+                      onChange={(e) => setImapForm(prev => ({ ...prev, host: e.target.value }))}
+                      placeholder="imap.gmail.com"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>IMAP Port</Label>
+                    <Input
+                      type="number"
+                      value={imapForm.port}
+                      onChange={(e) => setImapForm(prev => ({ ...prev, port: parseInt(e.target.value) || 993 }))}
+                      placeholder="993"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>IMAP Username</Label>
+                    <Input
+                      value={imapForm.username}
+                      onChange={(e) => setImapForm(prev => ({ ...prev, username: e.target.value }))}
+                      placeholder="your-email@gmail.com"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>IMAP Password</Label>
+                    <Input
+                      type="password"
+                      value={imapForm.password}
+                      onChange={(e) => setImapForm(prev => ({ ...prev, password: e.target.value }))}
+                      placeholder="Leave empty to keep current password"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label>Use Secure Connection (TLS/SSL)</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Enable for secure IMAP connections
+                    </p>
+                  </div>
+                  <Switch
+                    checked={imapForm.secure}
+                    onCheckedChange={(checked) => setImapForm(prev => ({ ...prev, secure: checked }))}
+                  />
+                </div>
+                <Button onClick={handleSaveEmailConfig} disabled={isSavingEmail}>
+                  {isSavingEmail && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                  <Save className="h-4 w-4 mr-2" />
+                  Save Email Config
+                </Button>
+              </CardContent>
+            </Card>
+
+            {/* Connection Status & Testing */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Connection Status</CardTitle>
+                <CardDescription>
+                  Test your email configuration
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {emailStatus ? (
+                  <>
+                    <div className={`flex items-center gap-3 p-4 rounded-lg border ${
+                      emailStatus.connected && emailStatus.isConfigured
+                        ? 'border-green-500/30 bg-green-500/5'
+                        : 'border-muted'
+                    }`}>
+                      <div className={`w-2 h-2 rounded-full ${
+                        emailStatus.connected && emailStatus.isConfigured
+                          ? 'bg-green-500'
+                          : 'bg-muted-foreground/30'
+                      }`} />
+                      <div className="flex-1">
+                        <div className="font-medium">
+                          {emailStatus.connected && emailStatus.isConfigured
+                            ? 'Connected'
+                            : 'Not Configured'}
+                        </div>
+                        {emailStatus.error && (
+                          <div className="text-sm text-destructive mt-1">
+                            {emailStatus.error}
+                          </div>
+                        )}
+                      </div>
+                      {emailStatus.connected && emailStatus.isConfigured && (
+                        <Badge variant="default" className="bg-green-600">
+                          <Check className="h-3 w-3 mr-1" />
+                          Connected
+                        </Badge>
+                      )}
+                    </div>
+
+                    <div className="flex gap-3">
+                      <Button
+                        onClick={handleTestConnection}
+                        disabled={isTestingConnection || !emailStatus?.isConfigured}
+                        variant="outline"
+                      >
+                        {isTestingConnection && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                        Test Connection
+                      </Button>
+                      <Button
+                        onClick={handleSendTestEmail}
+                        disabled={isSendingTest || !emailStatus?.isConfigured}
+                        variant="outline"
+                      >
+                        {isSendingTest && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                        Send Test Email
+                      </Button>
+                    </div>
+
+                    {testResult && (
+                      <div className={`p-3 rounded-lg ${
+                        testResult.success
+                          ? 'bg-green-500/10 border border-green-500/30'
+                          : 'bg-destructive/10 border border-destructive/30'
+                      }`}>
+                        <div className={`text-sm ${
+                          testResult.success ? 'text-green-700 dark:text-green-400' : 'text-destructive'
+                        }`}>
+                          {testResult.message}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Loader2 className="h-8 w-8 mx-auto mb-4 animate-spin" />
+                    <p>Loading email status...</p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Branding Tab */}
+          <TabsContent value="branding" className="space-y-4">
+            {/* Company Info */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Company Information</CardTitle>
+                <CardDescription>
+                  Configure your company details used in email templates
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Company Name</Label>
+                    <input
+                      type="text"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      value={settings?.companyName || ''}
+                      onChange={(e) =>
+                        setSettings((prev) =>
+                          prev ? { ...prev, companyName: e.target.value } : null
+                        )
+                      }
+                      placeholder="The Tiny Web Factory"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Company Website</Label>
+                    <input
+                      type="url"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      value={settings?.companyWebsite || ''}
+                      onChange={(e) =>
+                        setSettings((prev) =>
+                          prev ? { ...prev, companyWebsite: e.target.value } : null
+                        )
+                      }
+                      placeholder="https://thetinywebfactory.com"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Company Tagline</Label>
+                  <input
+                    type="text"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={settings?.companyTagline || ''}
+                    onChange={(e) =>
+                      setSettings((prev) =>
+                        prev ? { ...prev, companyTagline: e.target.value } : null
+                      )
+                    }
+                    placeholder="Professional Web Design for Your Business"
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Logo & Banner */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Logo & Banner</CardTitle>
+                <CardDescription>
+                  Add your company logo or banner image to email headers
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Logo URL</Label>
+                  <input
+                    type="url"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={settings?.logoUrl || ''}
+                    onChange={(e) =>
+                      setSettings((prev) =>
+                        prev ? { ...prev, logoUrl: e.target.value || null } : null
+                      )
+                    }
+                    placeholder="https://example.com/logo.png"
+                  />
+                  {settings?.logoUrl && (
+                    <div className="mt-2 p-4 border rounded-lg bg-muted/30">
+                      <img
+                        src={settings.logoUrl}
+                        alt="Logo preview"
+                        className="max-h-16 object-contain"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <Label>Banner URL</Label>
+                  <input
+                    type="url"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={settings?.bannerUrl || ''}
+                    onChange={(e) =>
+                      setSettings((prev) =>
+                        prev ? { ...prev, bannerUrl: e.target.value || null } : null
+                      )
+                    }
+                    placeholder="https://example.com/banner.png"
+                  />
+                  {settings?.bannerUrl && (
+                    <div className="mt-2 p-4 border rounded-lg bg-muted/30">
+                      <img
+                        src={settings.bannerUrl}
+                        alt="Banner preview"
+                        className="max-w-full max-h-32 object-contain"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }}
+                      />
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    If both logo and banner are set, the banner takes priority in emails. Recommended banner width: 600px.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* WhatsApp CTA */}
+            <Card>
+              <CardHeader>
+                <CardTitle>WhatsApp CTA</CardTitle>
+                <CardDescription>
+                  Configure the WhatsApp call-to-action button in emails
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>WhatsApp Phone Number</Label>
+                  <input
+                    type="text"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={settings?.whatsappPhone || ''}
+                    onChange={(e) =>
+                      setSettings((prev) =>
+                        prev ? { ...prev, whatsappPhone: e.target.value || null } : null
+                      )
+                    }
+                    placeholder="27662565938"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    International format without + sign. Leave empty to hide the WhatsApp CTA button.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Social Media Links */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Social Media Links</CardTitle>
+                <CardDescription>
+                  Add social media links to the email footer. Only links with URLs will be shown.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Facebook</Label>
+                    <input
+                      type="url"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      value={settings?.socialFacebookUrl || ''}
+                      onChange={(e) =>
+                        setSettings((prev) =>
+                          prev ? { ...prev, socialFacebookUrl: e.target.value || null } : null
+                        )
+                      }
+                      placeholder="https://facebook.com/yourpage"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Instagram</Label>
+                    <input
+                      type="url"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      value={settings?.socialInstagramUrl || ''}
+                      onChange={(e) =>
+                        setSettings((prev) =>
+                          prev ? { ...prev, socialInstagramUrl: e.target.value || null } : null
+                        )
+                      }
+                      placeholder="https://instagram.com/yourprofile"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>LinkedIn</Label>
+                    <input
+                      type="url"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      value={settings?.socialLinkedinUrl || ''}
+                      onChange={(e) =>
+                        setSettings((prev) =>
+                          prev ? { ...prev, socialLinkedinUrl: e.target.value || null } : null
+                        )
+                      }
+                      placeholder="https://linkedin.com/company/yourcompany"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Twitter / X</Label>
+                    <input
+                      type="url"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      value={settings?.socialTwitterUrl || ''}
+                      onChange={(e) =>
+                        setSettings((prev) =>
+                          prev ? { ...prev, socialTwitterUrl: e.target.value || null } : null
+                        )
+                      }
+                      placeholder="https://x.com/yourhandle"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>TikTok</Label>
+                    <input
+                      type="url"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      value={settings?.socialTiktokUrl || ''}
+                      onChange={(e) =>
+                        setSettings((prev) =>
+                          prev ? { ...prev, socialTiktokUrl: e.target.value || null } : null
+                        )
+                      }
+                      placeholder="https://tiktok.com/@yourhandle"
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Actions */}
+            <div className="flex gap-3">
+              <Button onClick={handleSaveSettings} disabled={isSaving}>
+                {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                <Save className="h-4 w-4 mr-2" />
+                Save Branding
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => window.open('/api/email/preview', '_blank')}
+              >
+                <Mail className="h-4 w-4 mr-2" />
+                Preview Email
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleSendTestEmail}
+                disabled={isSendingTest || !emailStatus?.isConfigured}
+              >
+                {isSendingTest && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Send Test Email
+              </Button>
+            </div>
           </TabsContent>
 
           {/* Message Settings Tab */}

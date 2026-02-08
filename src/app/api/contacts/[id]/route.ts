@@ -14,9 +14,10 @@ export async function GET(
     }
 
     const { id } = await params;
+    const teamId = session.user.teamId;
 
-    const contact = await prisma.contact.findUnique({
-      where: { id },
+    const contact = await prisma.contact.findFirst({
+      where: { id, teamId },
     });
 
     if (!contact) {
@@ -45,10 +46,19 @@ export async function PATCH(
     }
 
     const { id } = await params;
+    const teamId = session.user.teamId;
     const body = await request.json();
     const { name, email, phone, telegramId, notes, isFavorite } = body;
 
-    const contact = await prisma.contact.update({
+    const contact = await prisma.contact.findFirst({
+      where: { id, teamId },
+    });
+
+    if (!contact) {
+      return NextResponse.json({ error: 'Contact not found' }, { status: 404 });
+    }
+
+    const updatedContact = await prisma.contact.update({
       where: { id },
       data: {
         ...(name !== undefined && { name }),
@@ -60,7 +70,7 @@ export async function PATCH(
       },
     });
 
-    return NextResponse.json(contact);
+    return NextResponse.json(updatedContact);
   } catch (error) {
     console.error('Error updating contact:', error);
     return NextResponse.json(
@@ -82,6 +92,15 @@ export async function DELETE(
     }
 
     const { id } = await params;
+    const teamId = session.user.teamId;
+
+    const contact = await prisma.contact.findFirst({
+      where: { id, teamId },
+    });
+
+    if (!contact) {
+      return NextResponse.json({ error: 'Contact not found' }, { status: 404 });
+    }
 
     await prisma.contact.delete({
       where: { id },

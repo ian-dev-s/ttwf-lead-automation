@@ -35,10 +35,12 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     const { id } = await params;
 
-    const lead = await prisma.lead.findUnique({
-      where: { id },
+    const lead = await prisma.lead.findFirst({
+      where: { id, teamId },
       include: {
         messages: {
           orderBy: { createdAt: 'desc' },
@@ -82,6 +84,8 @@ export async function PATCH(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     if (session.user.role === 'VIEWER') {
       return NextResponse.json(
         { error: 'Insufficient permissions' },
@@ -94,8 +98,8 @@ export async function PATCH(
     const validatedData = updateLeadSchema.parse(body);
 
     // Get current lead for status tracking
-    const currentLead = await prisma.lead.findUnique({
-      where: { id },
+    const currentLead = await prisma.lead.findFirst({
+      where: { id, teamId },
     });
 
     if (!currentLead) {
@@ -157,7 +161,7 @@ export async function PATCH(
     if (validatedData.status && validatedData.status !== currentLead.status) {
       // Get messages to validate status change
       const messages = await prisma.message.findMany({
-        where: { leadId: id },
+        where: { leadId: id, teamId },
       });
 
       const hasMessages = messages.length > 0;
@@ -185,6 +189,7 @@ export async function PATCH(
           fromStatus: currentLead.status,
           toStatus: validatedData.status,
           changedById: session.user.id,
+          teamId,
         },
       });
 
@@ -245,6 +250,8 @@ export async function DELETE(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     // Only admins can delete
     if (session.user.role !== 'ADMIN') {
       return NextResponse.json(
@@ -254,6 +261,15 @@ export async function DELETE(
     }
 
     const { id } = await params;
+
+    // Verify the lead belongs to the team before deleting
+    const lead = await prisma.lead.findFirst({
+      where: { id, teamId },
+    });
+
+    if (!lead) {
+      return NextResponse.json({ error: 'Lead not found' }, { status: 404 });
+    }
 
     await prisma.lead.delete({
       where: { id },

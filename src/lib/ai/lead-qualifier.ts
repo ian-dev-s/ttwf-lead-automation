@@ -117,11 +117,12 @@ The JSON response should have this structure:
  * Qualify a lead using AI to determine their potential as a customer
  */
 export async function qualifyLeadWithAI(
+  teamId: string,
   input: LeadQualificationInput
 ): Promise<LeadQualification> {
   const prompt = buildQualificationPrompt(input);
   
-  const model = getLanguageModel({
+  const model = await getLanguageModel(teamId, {
     provider: 'OPENROUTER',
     model: 'google/gemini-3-flash-preview',
   });
@@ -316,6 +317,7 @@ function calculateFallbackQualification(input: LeadQualificationInput): LeadQual
  * Batch qualify multiple leads
  */
 export async function qualifyLeadsBatch(
+  teamId: string,
   leads: LeadQualificationInput[]
 ): Promise<Map<string, LeadQualification>> {
   const results = new Map<string, LeadQualification>();
@@ -325,7 +327,7 @@ export async function qualifyLeadsBatch(
   for (let i = 0; i < leads.length; i += concurrency) {
     const batch = leads.slice(i, i + concurrency);
     const batchResults = await Promise.all(
-      batch.map(lead => qualifyLeadWithAI(lead))
+      batch.map(lead => qualifyLeadWithAI(teamId, lead))
     );
     
     batch.forEach((lead, idx) => {

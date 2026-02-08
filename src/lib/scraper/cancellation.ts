@@ -135,7 +135,8 @@ export function isJobCancelled(jobId: string): boolean {
 export async function withCancellation<T>(
   token: CancellationToken | undefined,
   operation: () => Promise<T>,
-  operationName: string = 'operation'
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _operationName: string = 'operation'
 ): Promise<T> {
   // Check before starting
   if (token?.isCancelled) {

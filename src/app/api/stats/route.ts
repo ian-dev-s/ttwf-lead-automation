@@ -2,6 +2,8 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 // GET /api/stats - Get dashboard statistics
 export async function GET() {
   try {
@@ -10,6 +12,8 @@ export async function GET() {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const teamId = session.user.teamId;
+
     const [
       totalLeads,
       leadsByStatus,
@@ -17,12 +21,14 @@ export async function GET() {
       pendingMessages,
       weeklyLeads,
     ] = await Promise.all([
-      prisma.lead.count(),
+      prisma.lead.count({ where: { teamId } }),
       prisma.lead.groupBy({
+        where: { teamId },
         by: ['status'],
         _count: true,
       }),
       prisma.lead.findMany({
+        where: { teamId },
         take: 5,
         orderBy: { createdAt: 'desc' },
         select: {
@@ -35,6 +41,7 @@ export async function GET() {
       }),
       prisma.message.count({
         where: {
+          teamId,
           status: {
             in: ['DRAFT', 'PENDING_APPROVAL', 'APPROVED'],
           },
@@ -42,6 +49,7 @@ export async function GET() {
       }),
       prisma.lead.count({
         where: {
+          teamId,
           createdAt: {
             gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
           },

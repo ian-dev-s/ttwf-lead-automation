@@ -13,8 +13,9 @@ export const config = {
      * - favicon.ico (favicon file)
      * - public files (public folder)
      * - api/auth (NextAuth routes)
-     * - login/register pages
+     * - api/setup (setup API for first-run)
+     * - login/register/setup pages
      */
-    '/((?!_next/static|_next/image|favicon.ico|public|api/auth|login|register).*)',
+    '/((?!_next/static|_next/image|favicon.ico|public|api/auth|api/setup|login|register|setup).*)',
   ],
 };

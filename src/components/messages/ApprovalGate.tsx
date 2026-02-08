@@ -18,21 +18,17 @@ import {
     TooltipProvider,
     TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { formatPhoneNumber, getWhatsAppUrl } from '@/lib/utils';
 import { Lead, Message } from '@prisma/client';
 import {
     AlertTriangle,
     Bot,
     CheckCircle,
     Copy,
-    ExternalLink,
     FileText,
     Globe,
     Mail,
     MapPin,
-    Phone,
     RefreshCw,
-    Smartphone,
     Star,
     XCircle,
 } from 'lucide-react';
@@ -58,7 +54,6 @@ export function ApprovalGate({ message, onApprove, onReject }: ApprovalGateProps
   const [copied, setCopied] = useState(false);
 
   const { lead } = message;
-  const isWhatsApp = message.type === 'WHATSAPP';
   const isAIGenerated = message.generatedBy === 'ai';
 
   const handleCopy = async () => {
@@ -86,26 +81,6 @@ export function ApprovalGate({ message, onApprove, onReject }: ApprovalGateProps
     }
   };
 
-  const handleMarkAsSent = async () => {
-    setIsApproving(true);
-    try {
-      const response = await fetch(`/api/messages/${message.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'SENT' }),
-      });
-
-      if (!response.ok) throw new Error('Failed to mark as sent');
-
-      onApprove?.();
-      router.refresh();
-    } catch (error) {
-      console.error('Error marking message as sent:', error);
-    } finally {
-      setIsApproving(false);
-    }
-  };
-
   const handleReject = async () => {
     setIsRejecting(true);
     try {
@@ -124,12 +99,6 @@ export function ApprovalGate({ message, onApprove, onReject }: ApprovalGateProps
     }
   };
 
-  const openWhatsApp = () => {
-    if (lead.phone) {
-      window.open(getWhatsAppUrl(lead.phone, message.content), '_blank');
-    }
-  };
-
   const handleRegenerate = async () => {
     setIsRegenerating(true);
     try {
@@ -143,7 +112,7 @@ export function ApprovalGate({ message, onApprove, onReject }: ApprovalGateProps
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           leadId: lead.id,
-          type: message.type,
+          type: 'EMAIL',
           useAI: true,
           saveMessage: true,
         }),
@@ -229,10 +198,10 @@ export function ApprovalGate({ message, onApprove, onReject }: ApprovalGateProps
               <MapPin className="h-4 w-4 text-muted-foreground" />
               <span>{lead.location}</span>
             </div>
-            {lead.phone && (
+            {lead.email && (
               <div className="flex items-center gap-1">
-                <Phone className="h-4 w-4 text-muted-foreground" />
-                <span>{formatPhoneNumber(lead.phone)}</span>
+                <Mail className="h-4 w-4 text-muted-foreground" />
+                <span>{lead.email}</span>
               </div>
             )}
             {lead.googleRating && (
@@ -255,14 +224,8 @@ export function ApprovalGate({ message, onApprove, onReject }: ApprovalGateProps
         {/* Message Preview */}
         <div>
           <div className="flex items-center gap-2 mb-3">
-            {isWhatsApp ? (
-              <Smartphone className="h-5 w-5 text-green-600" />
-            ) : (
-              <Mail className="h-5 w-5 text-blue-600" />
-            )}
-            <h4 className="font-semibold">
-              {isWhatsApp ? 'WhatsApp Message' : 'Email Message'}
-            </h4>
+            <Mail className="h-5 w-5 text-blue-600" />
+            <h4 className="font-semibold">Email Message</h4>
           </div>
 
           {message.subject && (
@@ -301,12 +264,6 @@ export function ApprovalGate({ message, onApprove, onReject }: ApprovalGateProps
             />
             {isRegenerating ? 'Regenerating...' : 'Regenerate with AI'}
           </Button>
-          {isWhatsApp && lead.phone && (
-            <Button variant="outline" size="sm" onClick={openWhatsApp}>
-              <ExternalLink className="h-4 w-4 mr-2" />
-              Open in WhatsApp
-            </Button>
-          )}
         </div>
 
         <Separator />
@@ -331,20 +288,6 @@ export function ApprovalGate({ message, onApprove, onReject }: ApprovalGateProps
               <CheckCircle className="h-4 w-4 mr-2" />
               {isApproving ? 'Approving...' : 'Approve'}
             </Button>
-
-            {isWhatsApp && lead.phone && (
-              <Button
-                variant="default"
-                onClick={() => {
-                  openWhatsApp();
-                  handleMarkAsSent();
-                }}
-                disabled={isApproving || isRejecting}
-              >
-                <ExternalLink className="h-4 w-4 mr-2" />
-                Send via WhatsApp
-              </Button>
-            )}
           </div>
         </div>
       </CardFooter>

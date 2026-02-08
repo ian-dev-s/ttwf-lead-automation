@@ -29,7 +29,6 @@ import {
     killAllScraperProcesses,
     killJobProcesses,
     processManager,
-    restoreProcessTracking,
     TrackedProcessInfo
 } from './process-manager';
 import { checkIfGoodProspect, quickQualityCheck } from './quality-checker';
@@ -80,29 +79,6 @@ async function clearPersistedProcessPids(jobId: string): Promise<void> {
     console.log(`[Job ${jobId}] Cleared persisted process PIDs from database`);
   } catch (error) {
     console.error(`[Job ${jobId}] Failed to clear persisted process PIDs:`, error);
-  }
-}
-
-/**
- * Load persisted process PIDs from database and restore tracking
- */
-async function loadPersistedProcessPids(jobId: string): Promise<TrackedProcessInfo[]> {
-  try {
-    const job = await prisma.scrapingJob.findUnique({
-      where: { id: jobId },
-    });
-    
-    // Use type assertion to access processPids
-    const processPids = (job as Record<string, unknown> | null)?.processPids as string | null;
-    if (!processPids) return [];
-    
-    const processInfo: TrackedProcessInfo[] = JSON.parse(processPids);
-    restoreProcessTracking(processInfo);
-    console.log(`[Job ${jobId}] Loaded ${processInfo.length} persisted process PIDs`);
-    return processInfo;
-  } catch (error) {
-    console.error(`[Job ${jobId}] Failed to load persisted process PIDs:`, error);
-    return [];
   }
 }
 
@@ -190,6 +166,7 @@ async function checkAnalyzedHistory(
  * Save a business to the analyzed history
  */
 async function saveToAnalyzedHistory(
+  teamId: string,
   business: {
     name: string;
     googleMapsUrl?: string;
@@ -214,6 +191,7 @@ async function saveToAnalyzedHistory(
         googleMapsUrl: business.googleMapsUrl || `manual_${business.name}_${location}_${country}`,
       },
       create: {
+        teamId,
         businessName: business.name,
         location,
         country,
@@ -414,11 +392,12 @@ export async function deleteJob(jobId: string): Promise<boolean> {
 /**
  * Save an AI-enriched lead to the database and auto-generate email message
  */
-async function saveSmartEnrichedLead(lead: SmartEnrichedLead, countryCode: string = DEFAULT_COUNTRY_CODE): Promise<boolean> {
+async function saveSmartEnrichedLead(lead: SmartEnrichedLead, teamId: string, countryCode: string = DEFAULT_COUNTRY_CODE): Promise<boolean> {
   try {
-    // Check if lead already exists
+    // Check if lead already exists (team-scoped)
     const existing = await prisma.lead.findFirst({
       where: {
+        teamId,
         OR: [
           { googleMapsUrl: lead.googleMapsUrl },
           { businessName: lead.businessName, location: lead.location },
@@ -434,9 +413,10 @@ async function saveSmartEnrichedLead(lead: SmartEnrichedLead, countryCode: strin
     // Calculate final score
     const score = lead.leadScore;
 
-    // Create the lead with country - always starts as NEW (will be QUALIFIED after email is generated)
+    // Create the lead with country and teamId
     const newLead = await prisma.lead.create({
       data: {
+        teamId,
         businessName: lead.businessName,
         industry: lead.industry,
         location: lead.location,
@@ -484,12 +464,13 @@ async function saveSmartEnrichedLead(lead: SmartEnrichedLead, countryCode: strin
     try {
       console.log(`   📧 Auto-generating email for: ${lead.businessName}`);
       const emailMessage = await generatePersonalizedMessage({
+        teamId,
         lead: newLead,
-        messageType: 'EMAIL',
       });
 
       await prisma.message.create({
         data: {
+          teamId,
           leadId: newLead.id,
           type: 'EMAIL',
           subject: emailMessage.subject,
@@ -586,10 +567,20 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     },
   });
 
+  // Get teamId from the job
+  const teamId = job.teamId;
+
+  // Read scrape delay from team settings (fallback to 500ms)
+  const teamSettings = await prisma.teamSettings.findUnique({
+    where: { teamId },
+    select: { scrapeDelayMs: true },
+  });
+  const scrapeDelay = teamSettings?.scrapeDelayMs || 500;
+
   // OPTIMIZED: Reduced delays for faster scraping
   const scraper = createGoogleMapsScraper({
     headless: true,
-    delayBetweenRequests: parseInt(process.env.SCRAPE_DELAY_MS || '500'),
+    delayBetweenRequests: scrapeDelay,
     maxResults: job.leadsRequested,
   });
   
@@ -755,9 +746,10 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                 jobLog.info(jobId, `⏭️ Skipping (from history): ${business.name} - ${historyCheck.skipReason}`);
                 continue;
               }
-              // Was a good prospect before - check if already converted to lead
+              // Was a good prospect before - check if already converted to lead (team-scoped)
               const existingLead = await prisma.lead.findFirst({
                 where: {
+                  teamId,
                   OR: [
                     { googleMapsUrl: business.googleMapsUrl },
                     { businessName: business.name, location: location },
@@ -773,9 +765,10 @@ export async function runScrapingJob(jobId: string): Promise<void> {
               jobLog.info(jobId, `✅ Previously analyzed as good prospect: ${business.name}`);
             }
 
-            // Check if this business already exists as a lead
-            const existingLead = await prisma.lead.findFirst({
+            // Check if this business already exists as a lead (team-scoped)
+            const existingLead2 = await prisma.lead.findFirst({
               where: {
+                teamId,
                 OR: [
                   { googleMapsUrl: business.googleMapsUrl },
                   {
@@ -786,7 +779,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
               },
             });
 
-            if (existingLead) {
+            if (existingLead2) {
               console.log(`   ⏭️  Skipping existing: ${business.name}`);
               jobLog.info(jobId, `⏭️ Skipping (already exists): ${business.name}`);
               continue;
@@ -825,6 +818,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                 
                 // Save to history so we don't re-analyze next time
                 await saveToAnalyzedHistory(
+                  teamId,
                   business,
                   location,
                   countryCode,
@@ -864,6 +858,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                 location,
                 category,
                 1, // workerId
+                teamId,
                 cancellationToken // Pass cancellation token for immediate stopping
               );
 
@@ -886,6 +881,7 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                 
                 // Save to history as not good prospect
                 await saveToAnalyzedHistory(
+                  teamId,
                   business,
                   location,
                   countryCode,
@@ -899,12 +895,13 @@ export async function runScrapingJob(jobId: string): Promise<void> {
 
               jobLog.progress(jobId, `💾 Saving lead: ${business.name}`);
               
-              // Save the AI-enriched lead with country
-              const saved = await saveSmartEnrichedLead(enrichedLead, countryCode);
+              // Save the AI-enriched lead with country and teamId
+              const saved = await saveSmartEnrichedLead(enrichedLead, teamId, countryCode);
 
               if (saved) {
                 // Save to history as converted lead
                 await saveToAnalyzedHistory(
+                  teamId,
                   business,
                   location,
                   countryCode,
@@ -1057,13 +1054,13 @@ export async function runScrapingJob(jobId: string): Promise<void> {
     // First, try graceful close
     try {
       await scraper.close();
-    } catch (e) {
+    } catch {
       // Ignore close errors
     }
     if (browser) {
       try {
         await browser.close();
-      } catch (e) {
+      } catch {
         // Ignore close errors
       }
     }
@@ -1085,8 +1082,9 @@ export async function runScrapingJob(jobId: string): Promise<void> {
   }
 }
 
-// Schedule a new scraping job
+// Schedule a new scraping job (team-scoped)
 export async function scheduleScrapingJob(options: {
+  teamId: string;
   leadsRequested: number;
   categories?: string[];
   locations?: string[];
@@ -1096,6 +1094,7 @@ export async function scheduleScrapingJob(options: {
 }): Promise<string> {
   const job = await prisma.scrapingJob.create({
     data: {
+      teamId: options.teamId,
       leadsRequested: options.leadsRequested,
       categories: options.categories || [],
       locations: options.locations || [],
@@ -1124,10 +1123,10 @@ export async function getPendingJobs() {
   });
 }
 
-// Generate messages for new leads
-export async function generateMessagesForNewLeads(): Promise<number> {
-  const settings = await prisma.systemSettings.findUnique({
-    where: { id: 'default' },
+// Generate messages for new leads (team-scoped)
+export async function generateMessagesForNewLeads(teamId: string): Promise<number> {
+  const settings = await prisma.teamSettings.findUnique({
+    where: { teamId },
   });
 
   if (!settings?.autoGenerateMessages) {
@@ -1136,6 +1135,7 @@ export async function generateMessagesForNewLeads(): Promise<number> {
 
   const newLeads = await prisma.lead.findMany({
     where: {
+      teamId,
       status: LeadStatus.NEW,
       messages: {
         none: {},
@@ -1148,32 +1148,16 @@ export async function generateMessagesForNewLeads(): Promise<number> {
 
   for (const lead of newLeads) {
     try {
-      // Generate WhatsApp message if phone available
-      if (lead.phone) {
-        const whatsappMessage = await generatePersonalizedMessage({
-          lead,
-          messageType: 'WHATSAPP',
-        });
-
-        await prisma.message.create({
-          data: {
-            leadId: lead.id,
-            type: 'WHATSAPP',
-            content: whatsappMessage.content,
-            status: 'DRAFT',
-          },
-        });
-      }
-
       // Generate email message if email available
       if (lead.email) {
         const emailMessage = await generatePersonalizedMessage({
+          teamId,
           lead,
-          messageType: 'EMAIL',
         });
 
         await prisma.message.create({
           data: {
+            teamId,
             leadId: lead.id,
             type: 'EMAIL',
             subject: emailMessage.subject,
