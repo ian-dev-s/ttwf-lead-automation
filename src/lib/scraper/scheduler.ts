@@ -3,40 +3,40 @@ import { Browser, chromium } from 'playwright';
 import { generatePersonalizedMessage } from '../ai/personalize';
 import { SmartEnrichedLead, smartEnrichLead } from '../ai/smart-enricher';
 import {
-  DEFAULT_COUNTRY_CODE,
-  getCitiesForCountry,
-  getCountryConfig,
-  SA_CITIES,
-  SUPPORTED_COUNTRIES,
-  TARGET_CATEGORIES
+    DEFAULT_COUNTRY_CODE,
+    getCitiesForCountry,
+    getCountryConfig,
+    SA_CITIES,
+    SUPPORTED_COUNTRIES,
+    TARGET_CATEGORIES
 } from '../constants';
 import { prisma } from '../db';
 import {
-  cancelJobToken,
-  createCancellationToken,
-  JobCancelledError,
-  removeCancellationToken,
-  sleepWithCancellation
+    cancelJobToken,
+    createCancellationToken,
+    JobCancelledError,
+    removeCancellationToken,
+    sleepWithCancellation
 } from './cancellation';
 import { createGoogleMapsScraper } from './google-maps';
 import { clearJobLogs, initJobLogs, jobLog } from './job-logger';
 import {
-  clearJobPids,
-  findAndKillJobProcesses,
-  getJobProcessInfo,
-  getProcessStatus,
-  getScraperChromeArgs,
-  killAllScraperProcesses,
-  killJobProcesses,
-  processManager,
-  restoreProcessTracking,
-  TrackedProcessInfo
+    clearJobPids,
+    findAndKillJobProcesses,
+    getJobProcessInfo,
+    getProcessStatus,
+    getScraperChromeArgs,
+    killAllScraperProcesses,
+    killJobProcesses,
+    processManager,
+    restoreProcessTracking,
+    TrackedProcessInfo
 } from './process-manager';
 import { checkIfGoodProspect, quickQualityCheck } from './quality-checker';
 
 // Re-export process manager functions for external use
 export {
-  getProcessStatus, killAllScraperProcesses, processManager
+    getProcessStatus, killAllScraperProcesses, processManager
 };
 
 // ============================================================================
@@ -412,7 +412,7 @@ export async function deleteJob(jobId: string): Promise<boolean> {
 }
 
 /**
- * Save an AI-enriched lead to the database
+ * Save an AI-enriched lead to the database and auto-generate email message
  */
 async function saveSmartEnrichedLead(lead: SmartEnrichedLead, countryCode: string = DEFAULT_COUNTRY_CODE): Promise<boolean> {
   try {
@@ -431,17 +431,11 @@ async function saveSmartEnrichedLead(lead: SmartEnrichedLead, countryCode: strin
       return false;
     }
 
-    // Determine status based on qualification
-    let status: typeof LeadStatus[keyof typeof LeadStatus] = LeadStatus.NEW;
-    if (lead.qualificationTier === 'A') {
-      status = LeadStatus.QUALIFIED;
-    }
-
     // Calculate final score
     const score = lead.leadScore;
 
-    // Create the lead with country
-    await prisma.lead.create({
+    // Create the lead with country - always starts as NEW (will be QUALIFIED after email is generated)
+    const newLead = await prisma.lead.create({
       data: {
         businessName: lead.businessName,
         industry: lead.industry,
@@ -460,7 +454,7 @@ async function saveSmartEnrichedLead(lead: SmartEnrichedLead, countryCode: strin
         googleRating: lead.googleRating,
         reviewCount: lead.reviewCount,
         description: lead.description,
-        status,
+        status: LeadStatus.NEW,
         source: 'ai_scraper',
         score,
         notes: buildLeadNotes(lead),
@@ -485,6 +479,40 @@ async function saveSmartEnrichedLead(lead: SmartEnrichedLead, countryCode: strin
         },
       },
     });
+
+    // Auto-generate email message for the new lead
+    try {
+      console.log(`   📧 Auto-generating email for: ${lead.businessName}`);
+      const emailMessage = await generatePersonalizedMessage({
+        lead: newLead,
+        messageType: 'EMAIL',
+      });
+
+      await prisma.message.create({
+        data: {
+          leadId: newLead.id,
+          type: 'EMAIL',
+          subject: emailMessage.subject,
+          content: emailMessage.content,
+          status: 'DRAFT',
+          generatedBy: 'ai',
+          aiProvider: emailMessage.provider,
+          aiModel: emailMessage.model,
+        },
+      });
+
+      // Now that email is generated, update status based on qualification tier
+      const newStatus = lead.qualificationTier === 'A' ? LeadStatus.QUALIFIED : LeadStatus.MESSAGE_READY;
+      await prisma.lead.update({
+        where: { id: newLead.id },
+        data: { status: newStatus },
+      });
+      
+      console.log(`   ✅ Email generated, status updated to: ${newStatus}`);
+    } catch (emailError) {
+      console.error(`   ⚠️ Failed to auto-generate email for ${lead.businessName}:`, emailError);
+      // Lead is still saved, just without email - stays as NEW
+    }
 
     return true;
   } catch (error) {

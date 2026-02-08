@@ -15,6 +15,7 @@ import { cn, formatPhoneNumber, getWhatsAppUrl } from '@/lib/utils';
 import { Draggable } from '@hello-pangea/dnd';
 import { Lead } from '@prisma/client';
 import {
+    CheckCircle,
     ExternalLink,
     Eye,
     Mail,
@@ -27,8 +28,21 @@ import {
 import Link from 'next/link';
 import { useState } from 'react';
 
+interface LeadMessage {
+  id: string;
+  type: 'EMAIL' | 'WHATSAPP';
+  status: string;
+}
+
+interface LeadWithMessages extends Lead {
+  messages?: LeadMessage[];
+  _count?: {
+    messages: number;
+  };
+}
+
 interface LeadCardProps {
-  lead: Lead;
+  lead: LeadWithMessages;
   index: number;
 }
 
@@ -41,6 +55,11 @@ export function LeadCard({ lead, index }: LeadCardProps) {
   const metadata = lead.metadata as { phones?: string[]; emails?: string[] } | null;
   const phoneCount = metadata?.phones?.length || (lead.phone ? 1 : 0);
   const emailCount = metadata?.emails?.length || (lead.email ? 1 : 0);
+  
+  // Check if lead has messages
+  const messageCount = lead._count?.messages || lead.messages?.length || 0;
+  const hasEmailMessage = lead.messages?.some(m => m.type === 'EMAIL') || false;
+  const hasWhatsAppMessage = lead.messages?.some(m => m.type === 'WHATSAPP') || false;
 
   return (
     <>
@@ -178,7 +197,35 @@ export function LeadCard({ lead, index }: LeadCardProps) {
                 )}
               </div>
 
-              <div className="mt-3 flex items-center justify-between">
+              {/* Message Indicators */}
+              {messageCount > 0 && (
+                <div className="mt-2 flex items-center gap-1.5">
+                  {hasEmailMessage && (
+                    <div className="flex items-center gap-0.5 text-xs text-blue-600 dark:text-blue-400" title="Has email message">
+                      <Mail className="h-3 w-3" />
+                      <CheckCircle className="h-2.5 w-2.5" />
+                    </div>
+                  )}
+                  {hasWhatsAppMessage && (
+                    <div className="flex items-center gap-0.5 text-xs text-green-600 dark:text-green-400" title="Has WhatsApp message">
+                      <MessageSquare className="h-3 w-3" />
+                      <CheckCircle className="h-2.5 w-2.5" />
+                    </div>
+                  )}
+                  <span className="text-xs text-muted-foreground">
+                    {messageCount} msg{messageCount > 1 ? 's' : ''}
+                  </span>
+                </div>
+              )}
+              {messageCount === 0 && !['NEW', 'REJECTED', 'INVALID', 'NOT_INTERESTED'].includes(lead.status) && (
+                <div className="mt-2 flex items-center gap-1">
+                  <Badge variant="outline" className="text-xs bg-red-50 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800">
+                    ⚠️ No Messages
+                  </Badge>
+                </div>
+              )}
+
+              <div className="mt-2 flex items-center justify-between">
                 <div className="flex items-center gap-1">
                   {!lead.website && (
                     <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800">

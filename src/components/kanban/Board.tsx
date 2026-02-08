@@ -4,21 +4,35 @@ import { useLeadsRealtime } from '@/hooks/use-realtime';
 import { kanbanColumnOrder, leadStatusLabels } from '@/lib/utils';
 import { DragDropContext, DropResult } from '@hello-pangea/dnd';
 import { Lead, LeadStatus } from '@prisma/client';
-import { RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { AlertCircle, RefreshCw, Wifi, WifiOff, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState, useTransition } from 'react';
 import { KanbanColumn } from './Column';
 
+interface LeadMessage {
+  id: string;
+  type: 'EMAIL' | 'WHATSAPP';
+  status: string;
+}
+
+interface LeadWithMessages extends Lead {
+  messages?: LeadMessage[];
+  _count?: {
+    messages: number;
+  };
+}
+
 interface KanbanBoardProps {
-  initialLeads: Lead[];
+  initialLeads: LeadWithMessages[];
 }
 
 export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
   const router = useRouter();
-  const [leads, setLeads] = useState<Lead[]>(initialLeads);
+  const [leads, setLeads] = useState<LeadWithMessages[]>(initialLeads);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isPending, startTransition] = useTransition();
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   
   // Skip next refresh if we just made a local change
   const [skipNextRefresh, setSkipNextRefresh] = useState(false);
@@ -54,7 +68,7 @@ export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
       .filter((lead) => lead.status === status)
       .sort((a, b) => a.businessName.localeCompare(b.businessName));
     return acc;
-  }, {} as Record<LeadStatus, Lead[]>);
+  }, {} as Record<LeadStatus, LeadWithMessages[]>);
 
   // Handle drag and drop
   const handleDragEnd = useCallback(
@@ -87,6 +101,7 @@ export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
 
       // Update on server
       setIsUpdating(true);
+      setErrorMessage(null);
       try {
         const response = await fetch(`/api/leads/${leadId}/status`, {
           method: 'PATCH',
@@ -95,12 +110,15 @@ export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
         });
 
         if (!response.ok) {
-          throw new Error('Failed to update status');
+          const data = await response.json();
+          throw new Error(data.error || 'Failed to update status');
         }
 
         // Don't call router.refresh() - real-time updates will handle it
       } catch (error) {
         console.error('Error updating lead status:', error);
+        // Show error message to user
+        setErrorMessage(error instanceof Error ? error.message : 'Failed to update status');
         // Revert on error and clear skip flag
         setSkipNextRefresh(false);
         setLeads((prevLeads) =>
@@ -110,6 +128,8 @@ export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
               : lead
           )
         );
+        // Auto-clear error after 5 seconds
+        setTimeout(() => setErrorMessage(null), 5000);
       } finally {
         setIsUpdating(false);
       }
@@ -157,6 +177,19 @@ export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
       {isUpdating && (
         <div className="fixed top-4 right-4 bg-primary text-primary-foreground px-4 py-2 rounded-md shadow-lg z-50">
           Updating...
+        </div>
+      )}
+      
+      {errorMessage && (
+        <div className="fixed top-4 right-4 bg-destructive text-destructive-foreground px-4 py-3 rounded-md shadow-lg z-50 flex items-center gap-3 max-w-md">
+          <AlertCircle className="h-5 w-5 shrink-0" />
+          <span className="text-sm">{errorMessage}</span>
+          <button
+            onClick={() => setErrorMessage(null)}
+            className="shrink-0 hover:opacity-80"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
       <DragDropContext onDragEnd={handleDragEnd}>

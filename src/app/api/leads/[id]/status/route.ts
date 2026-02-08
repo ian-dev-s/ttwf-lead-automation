@@ -33,9 +33,12 @@ export async function PATCH(
     const body = await request.json();
     const { status, notes } = statusUpdateSchema.parse(body);
 
-    // Get current lead
+    // Get current lead with messages
     const currentLead = await prisma.lead.findUnique({
       where: { id },
+      include: {
+        messages: true,
+      },
     });
 
     if (!currentLead) {
@@ -45,6 +48,24 @@ export async function PATCH(
     // Skip if status hasn't changed
     if (currentLead.status === status) {
       return NextResponse.json(currentLead);
+    }
+
+    // VALIDATION: A lead cannot have any status other than NEW without a message
+    const hasMessages = currentLead.messages.length > 0;
+    if (!hasMessages && status !== 'NEW' && status !== 'REJECTED' && status !== 'INVALID') {
+      return NextResponse.json(
+        { error: 'A lead must have at least one message before changing status from NEW' },
+        { status: 400 }
+      );
+    }
+
+    // VALIDATION: A lead must have an EMAIL message to be QUALIFIED
+    const hasEmailMessage = currentLead.messages.some(m => m.type === 'EMAIL');
+    if (status === 'QUALIFIED' && !hasEmailMessage) {
+      return NextResponse.json(
+        { error: 'A lead must have an email message to be qualified' },
+        { status: 400 }
+      );
     }
 
     // Verify the user exists before creating status history

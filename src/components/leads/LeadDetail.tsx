@@ -133,6 +133,13 @@ export function LeadDetail({ lead }: LeadDetailProps) {
   };
 
   const handleQualifyLead = async () => {
+    // Check if lead has an email message
+    const hasEmailMessage = lead.messages.some(m => m.type === 'EMAIL');
+    if (!hasEmailMessage) {
+      alert('A lead must have an email message to be qualified. Please generate an email first.');
+      return;
+    }
+
     setIsQualifying(true);
     try {
       const response = await fetch(`/api/leads/${lead.id}`, {
@@ -143,11 +150,15 @@ export function LeadDetail({ lead }: LeadDetailProps) {
         }),
       });
 
-      if (!response.ok) throw new Error('Failed to qualify lead');
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to qualify lead');
+      }
 
       router.refresh();
     } catch (error) {
       console.error('Error qualifying lead:', error);
+      alert(error instanceof Error ? error.message : 'Failed to qualify lead');
     } finally {
       setIsQualifying(false);
     }
@@ -215,6 +226,11 @@ export function LeadDetail({ lead }: LeadDetailProps) {
   );
   const approvedMessages = lead.messages.filter((m) => m.status === 'APPROVED');
   const sentMessages = lead.messages.filter((m) => m.status === 'SENT');
+  
+  // Check for message requirements
+  const hasMessages = lead.messages.length > 0;
+  const hasEmailMessage = lead.messages.some(m => m.type === 'EMAIL');
+  const canQualify = hasEmailMessage;
 
   return (
     <div className="space-y-6">
@@ -590,30 +606,39 @@ export function LeadDetail({ lead }: LeadDetailProps) {
                 Update the lead status or reject this lead
               </CardDescription>
             </CardHeader>
-            <CardContent className="flex gap-4">
-              {lead.status !== 'QUALIFIED' && lead.status !== 'NOT_INTERESTED' && lead.status !== 'REJECTED' && lead.status !== 'INVALID' && (
-                <Button
-                  onClick={handleQualifyLead}
-                  disabled={isQualifying}
-                  className="bg-green-600 hover:bg-green-700 text-white"
-                >
-                  {isQualifying ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <CheckCircle className="h-4 w-4 mr-2" />
-                  )}
-                  {isQualifying ? 'Qualifying...' : 'Qualify Lead'}
-                </Button>
+            <CardContent className="space-y-4">
+              {!hasEmailMessage && lead.status === 'NEW' && (
+                <div className="flex items-center gap-2 p-3 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-800 dark:text-yellow-200 rounded-md text-sm">
+                  <Mail className="h-4 w-4" />
+                  <span>Generate an email message to qualify this lead</span>
+                </div>
               )}
-              {lead.status !== 'NOT_INTERESTED' && lead.status !== 'REJECTED' && lead.status !== 'INVALID' && (
-                <Button
-                  variant="destructive"
-                  onClick={() => setShowRejectDialog(true)}
-                >
-                  <XCircle className="h-4 w-4 mr-2" />
-                  Reject Lead
-                </Button>
-              )}
+              <div className="flex gap-4">
+                {lead.status !== 'QUALIFIED' && lead.status !== 'NOT_INTERESTED' && lead.status !== 'REJECTED' && lead.status !== 'INVALID' && (
+                  <Button
+                    onClick={handleQualifyLead}
+                    disabled={isQualifying || !canQualify}
+                    className="bg-green-600 hover:bg-green-700 text-white disabled:opacity-50"
+                    title={!canQualify ? 'Generate an email message first' : undefined}
+                  >
+                    {isQualifying ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <CheckCircle className="h-4 w-4 mr-2" />
+                    )}
+                    {isQualifying ? 'Qualifying...' : 'Qualify Lead'}
+                  </Button>
+                )}
+                {lead.status !== 'NOT_INTERESTED' && lead.status !== 'REJECTED' && lead.status !== 'INVALID' && (
+                  <Button
+                    variant="destructive"
+                    onClick={() => setShowRejectDialog(true)}
+                  >
+                    <XCircle className="h-4 w-4 mr-2" />
+                    Reject Lead
+                  </Button>
+                )}
+              </div>
             </CardContent>
           </Card>
 

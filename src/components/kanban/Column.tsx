@@ -5,10 +5,23 @@ import { Droppable } from '@hello-pangea/dnd';
 import { Lead, LeadStatus } from '@prisma/client';
 import { LeadCard } from './LeadCard';
 
+interface LeadMessage {
+  id: string;
+  type: 'EMAIL' | 'WHATSAPP';
+  status: string;
+}
+
+interface LeadWithMessages extends Lead {
+  messages?: LeadMessage[];
+  _count?: {
+    messages: number;
+  };
+}
+
 interface KanbanColumnProps {
   status: LeadStatus;
   title: string;
-  leads: Lead[];
+  leads: LeadWithMessages[];
 }
 
 const columnColors: Record<LeadStatus, string> = {

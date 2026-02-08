@@ -18,7 +18,8 @@ Key guidelines:
 - Be respectful of their time
 - Use South African English spelling (e.g., "favour" not "favor")
 - Keep WhatsApp messages shorter and more conversational
-- Keep email messages professional with proper formatting
+- For EMAIL messages: Use HTML formatting (NOT markdown). Use <p>, <br>, <strong>, <em>, <a href="..."> tags.
+- For WhatsApp messages: Plain text only, no formatting
 
 The Tiny Web Factory offers:
 - Professional landing page websites
@@ -29,15 +30,23 @@ The Tiny Web Factory offers:
 export function generateMessagePrompt(lead: Lead, type: MessageType): string {
   const businessDetails = buildBusinessDetails(lead);
   const format = type === 'WHATSAPP' ? 'WhatsApp' : 'email';
-  const lengthGuidance = type === 'WHATSAPP' 
-    ? 'Keep it concise (under 1000 characters) and conversational. No subject line needed.'
-    : 'Include a compelling subject line. Can be longer and more detailed.';
+  
+  const formatGuidance = type === 'WHATSAPP' 
+    ? 'Keep it concise (under 1000 characters) and conversational. No subject line needed. Use plain text only, no formatting tags.'
+    : `Include a compelling subject line on the first line like "Subject: Your Subject Here".
+IMPORTANT: Format the body using HTML tags (NOT markdown). Use:
+- <p>...</p> for paragraphs
+- <br> for line breaks within paragraphs
+- <strong>...</strong> for bold text
+- <em>...</em> for italic text
+- <a href="https://...">link text</a> for links
+Do NOT use markdown syntax like **bold** or [link](url).`;
   
   return `Write a personalized ${format} message to reach out to this business:
 
 ${businessDetails}
 
-${lengthGuidance}
+${formatGuidance}
 
 Base the message on this template but personalize it:
 
@@ -60,7 +69,7 @@ https://thetinywebfactory.com
 The Tiny Web Factory Team
 ---
 
-Personalize this message based on their specific details. ${type === 'WHATSAPP' ? 'Make it WhatsApp-friendly (shorter, can include appropriate emojis sparingly).' : 'Format it as a professional email with proper greeting and signature.'}`;
+Personalize this message based on their specific details. ${type === 'WHATSAPP' ? 'Make it WhatsApp-friendly (shorter, can include appropriate emojis sparingly). Use plain text only.' : 'Format it as a professional HTML email with proper greeting and signature. Remember: Use HTML tags, NOT markdown.'}`;
 }
 
 // Build business details string for the prompt

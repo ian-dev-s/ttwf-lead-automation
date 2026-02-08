@@ -35,6 +35,15 @@ import {
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
+interface Message {
+  id: string;
+  type: 'EMAIL' | 'WHATSAPP';
+  subject: string | null;
+  content: string;
+  status: string;
+  createdAt: Date;
+}
+
 interface Lead {
   id: string;
   businessName: string;
@@ -50,6 +59,7 @@ interface Lead {
   facebookUrl: string | null;
   notes: string | null;
   score: number;
+  messages?: Message[];
 }
 
 interface ShareLeadDialogProps {
@@ -103,7 +113,37 @@ export function ShareLeadDialog({ lead, open, onOpenChange }: ShareLeadDialogPro
     
     if (lead.notes) {
       lines.push('');
-      lines.push(`📝 Notes: ${lead.notes}`);
+      lines.push(`📝 Notes:`);
+      lines.push(lead.notes);
+    }
+
+    // Include messages if available
+    if (lead.messages && lead.messages.length > 0) {
+      lines.push('');
+      lines.push('═══════════════════════════════');
+      lines.push('📨 MESSAGES');
+      lines.push('═══════════════════════════════');
+      
+      lead.messages.forEach((message, index) => {
+        lines.push('');
+        lines.push(`--- Message ${index + 1} (${message.type}) ---`);
+        if (message.subject) {
+          lines.push(`Subject: ${message.subject}`);
+        }
+        lines.push(`Status: ${message.status}`);
+        lines.push('');
+        // Strip HTML tags for sharing in plain text
+        const plainContent = message.content
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<\/p>/gi, '\n')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"');
+        lines.push(plainContent);
+      });
     }
 
     return lines.join('\n');

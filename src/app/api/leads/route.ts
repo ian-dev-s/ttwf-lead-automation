@@ -58,13 +58,21 @@ export async function GET(request: NextRequest) {
     // Get total count
     const total = await prisma.lead.count({ where });
 
-    // Get leads
+    // Get leads with message count and types
     const leads = await prisma.lead.findMany({
       where,
       include: {
         messages: {
-          orderBy: { createdAt: 'desc' },
-          take: 1,
+          select: {
+            id: true,
+            type: true,
+            status: true,
+          },
+        },
+        _count: {
+          select: {
+            messages: true,
+          },
         },
       },
       orderBy: { [sortBy]: sortOrder },

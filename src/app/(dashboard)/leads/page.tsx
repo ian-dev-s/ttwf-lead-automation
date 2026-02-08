@@ -9,6 +9,20 @@ import Link from 'next/link';
 
 async function getLeads() {
   return prisma.lead.findMany({
+    include: {
+      messages: {
+        select: {
+          id: true,
+          type: true,
+          status: true,
+        },
+      },
+      _count: {
+        select: {
+          messages: true,
+        },
+      },
+    },
     orderBy: [
       { score: 'desc' },
       { createdAt: 'desc' },

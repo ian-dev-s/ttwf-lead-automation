@@ -155,6 +155,30 @@ export async function PATCH(
 
     // Track status change
     if (validatedData.status && validatedData.status !== currentLead.status) {
+      // Get messages to validate status change
+      const messages = await prisma.message.findMany({
+        where: { leadId: id },
+      });
+
+      const hasMessages = messages.length > 0;
+      const hasEmailMessage = messages.some(m => m.type === 'EMAIL');
+
+      // VALIDATION: A lead cannot have any status other than NEW without a message
+      if (!hasMessages && validatedData.status !== 'NEW' && validatedData.status !== 'REJECTED' && validatedData.status !== 'INVALID') {
+        return NextResponse.json(
+          { error: 'A lead must have at least one message before changing status from NEW' },
+          { status: 400 }
+        );
+      }
+
+      // VALIDATION: A lead must have an EMAIL message to be QUALIFIED
+      if (validatedData.status === 'QUALIFIED' && !hasEmailMessage) {
+        return NextResponse.json(
+          { error: 'A lead must have an email message to be qualified' },
+          { status: 400 }
+        );
+      }
+
       await prisma.statusHistory.create({
         data: {
           leadId: id,
