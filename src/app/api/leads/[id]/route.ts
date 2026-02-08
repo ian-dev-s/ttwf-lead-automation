@@ -1,7 +1,7 @@
 import { auth } from '@/lib/auth';
 import { leadDoc, messagesCollection, statusHistoryCollection, stripUndefined, serializeDoc } from '@/lib/firebase/collections';
 import { events } from '@/lib/events';
-import { calculateLeadScore } from '@/lib/utils';
+import { calculateLeadScore, determineOutreachType } from '@/lib/utils';
 import { LeadStatus } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -147,6 +147,15 @@ export async function PATCH(
         hasPhone: !!newPhone,
         hasEmail: !!newEmail,
       });
+
+      // Recalculate outreach type when contact info changes
+      if ('email' in body || 'phone' in body) {
+        updateData.outreachType = determineOutreachType({
+          email: newEmail as string | null,
+          phone: newPhone as string | null,
+          metadata: currentLead.metadata as Record<string, unknown> | null,
+        });
+      }
     }
 
     // Track status change

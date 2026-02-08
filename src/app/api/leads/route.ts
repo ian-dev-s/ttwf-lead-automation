@@ -1,8 +1,8 @@
 import { auth } from '@/lib/auth';
 import { leadsCollection, messagesCollection, stripUndefined, serializeDoc } from '@/lib/firebase/collections';
 import { events } from '@/lib/events';
-import { calculateLeadScore } from '@/lib/utils';
-import type { LeadStatus } from '@/types';
+import { calculateLeadScore, determineOutreachType } from '@/lib/utils';
+import type { LeadStatus, OutreachType } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -35,6 +35,7 @@ export async function GET(request: NextRequest) {
     const teamId = session.user.teamId;
     const searchParams = request.nextUrl.searchParams;
     const status = searchParams.get('status') as LeadStatus | null;
+    const outreachType = searchParams.get('outreachType') as OutreachType | null;
     const page = parseInt(searchParams.get('page') || '1');
     const limit = parseInt(searchParams.get('limit') || '50');
     const sortBy = searchParams.get('sortBy') || 'createdAt';
@@ -46,6 +47,11 @@ export async function GET(request: NextRequest) {
     // Status filter
     if (status) {
       query = query.where('status', '==', status);
+    }
+
+    // Outreach type filter
+    if (outreachType) {
+      query = query.where('outreachType', '==', outreachType);
     }
 
     // Search by lowercase fields (prefix matching)
@@ -173,6 +179,10 @@ export async function POST(request: NextRequest) {
       reviewCount: validatedData.reviewCount || null,
       description: null,
       status: 'NEW' as const,
+      outreachType: determineOutreachType({
+        email: validatedData.email || null,
+        phone: validatedData.phone || null,
+      }),
       source: validatedData.source || 'manual',
       score,
       notes: validatedData.notes || null,

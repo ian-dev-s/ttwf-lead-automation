@@ -1,11 +1,11 @@
 'use client';
 
 import { useLeadsRealtime } from '@/hooks/use-realtime';
-import { kanbanColumnOrder, leadStatusLabels } from '@/lib/utils';
+import { kanbanColumnOrder, leadStatusLabels, outreachTypeLabels, determineOutreachType } from '@/lib/utils';
 import { DragDropContext, DropResult } from '@hello-pangea/dnd';
-import { Lead, LeadStatus } from '@/types';
-import { AlertCircle, RefreshCw, Wifi, WifiOff, X } from 'lucide-react';
-import { useCallback, useEffect, useState, useTransition } from 'react';
+import { Lead, LeadStatus, OutreachType } from '@/types';
+import { AlertCircle, Mail, MessageCircle, Phone, RefreshCw, Wifi, WifiOff, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState, useTransition } from 'react';
 import { KanbanColumn } from './Column';
 
 interface LeadMessage {
@@ -25,15 +25,42 @@ interface KanbanBoardProps {
   initialLeads: LeadWithMessages[];
 }
 
+const outreachFilterOptions: Array<{ value: OutreachType | 'ALL'; label: string; icon: typeof Mail }> = [
+  { value: 'ALL', label: 'All', icon: RefreshCw },
+  { value: 'EMAIL', label: 'Email Ready', icon: Mail },
+  { value: 'COLD_CALL', label: 'Cold Call', icon: Phone },
+  { value: 'WHATSAPP', label: 'WhatsApp', icon: MessageCircle },
+];
+
 export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
   const [leads, setLeads] = useState<LeadWithMessages[]>(initialLeads);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isPending, startTransition] = useTransition();
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [outreachFilter, setOutreachFilter] = useState<OutreachType | 'ALL'>('ALL');
   
   // Skip next refresh if we just made a local change
   const [skipNextRefresh, setSkipNextRefresh] = useState(false);
+
+  // Compute outreach type counts for filter tabs
+  const outreachCounts = useMemo(() => {
+    const counts: Record<OutreachType | 'ALL', number> = { ALL: leads.length, EMAIL: 0, COLD_CALL: 0, WHATSAPP: 0 };
+    for (const lead of leads) {
+      const ot = lead.outreachType || determineOutreachType(lead);
+      counts[ot] = (counts[ot] || 0) + 1;
+    }
+    return counts;
+  }, [leads]);
+
+  // Filter leads by outreach type
+  const filteredLeads = useMemo(() => {
+    if (outreachFilter === 'ALL') return leads;
+    return leads.filter((lead) => {
+      const ot = lead.outreachType || determineOutreachType(lead);
+      return ot === outreachFilter;
+    });
+  }, [leads, outreachFilter]);
 
   // Fetch leads from the server
   const refreshLeads = useCallback(async () => {
@@ -62,7 +89,7 @@ export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
 
   // Group leads by status and sort alphabetically by business name
   const leadsByStatus = kanbanColumnOrder.reduce((acc, status) => {
-    acc[status] = leads
+    acc[status] = filteredLeads
       .filter((lead) => lead.status === status)
       .sort((a, b) => a.businessName.localeCompare(b.businessName));
     return acc;
@@ -142,6 +169,39 @@ export function KanbanBoard({ initialLeads }: KanbanBoardProps) {
 
   return (
     <div className="h-full flex flex-col">
+      {/* Outreach Type Filter Tabs */}
+      <div className="flex items-center gap-1 mb-3 px-1">
+        {outreachFilterOptions.map(({ value, label, icon: Icon }) => {
+          const isActive = outreachFilter === value;
+          const count = outreachCounts[value];
+          return (
+            <button
+              key={value}
+              onClick={() => setOutreachFilter(value)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                isActive
+                  ? value === 'EMAIL'
+                    ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300'
+                    : value === 'COLD_CALL'
+                    ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300'
+                    : value === 'WHATSAPP'
+                    ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300'
+                    : 'bg-primary/10 text-primary'
+                  : 'text-muted-foreground hover:bg-muted'
+              }`}
+            >
+              {value !== 'ALL' && <Icon className="h-3.5 w-3.5" />}
+              {label}
+              <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                isActive ? 'bg-white/50 dark:bg-black/20' : 'bg-muted'
+              }`}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* Status Bar */}
       <div className="flex items-center justify-between mb-4 px-1">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">

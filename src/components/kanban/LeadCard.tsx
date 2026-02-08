@@ -11,15 +11,16 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { cn, formatPhoneNumber, getWhatsAppUrl } from '@/lib/utils';
+import { cn, formatPhoneNumber, getWhatsAppUrl, determineOutreachType, outreachTypeLabels } from '@/lib/utils';
 import { Draggable } from '@hello-pangea/dnd';
-import { Lead } from '@/types';
+import { Lead, OutreachType } from '@/types';
 import {
     CheckCircle,
     ExternalLink,
     Eye,
     Mail,
     MapPin,
+    MessageCircle,
     MessageSquare,
     MoreVertical,
     Phone,
@@ -60,6 +61,15 @@ export function LeadCard({ lead, index }: LeadCardProps) {
   const messageCount = lead._count?.messages || lead.messages?.length || 0;
   const hasEmailMessage = lead.messages?.some(m => m.type === 'EMAIL') || false;
   const hasWhatsAppMessage = lead.messages?.some(m => m.type === 'WHATSAPP') || false;
+
+  // Determine outreach type (with fallback for un-migrated leads)
+  const outreachType: OutreachType = lead.outreachType || determineOutreachType(lead);
+  const OutreachIcon = outreachType === 'EMAIL' ? Mail : outreachType === 'WHATSAPP' ? MessageCircle : Phone;
+  const outreachColor = outreachType === 'EMAIL'
+    ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800'
+    : outreachType === 'WHATSAPP'
+    ? 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800'
+    : 'bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-800';
 
   return (
     <>
@@ -227,6 +237,10 @@ export function LeadCard({ lead, index }: LeadCardProps) {
 
               <div className="mt-2 flex items-center justify-between">
                 <div className="flex items-center gap-1">
+                  <Badge variant="outline" className={cn('text-xs flex items-center gap-1', outreachColor)}>
+                    <OutreachIcon className="h-3 w-3" />
+                    {outreachTypeLabels[outreachType]}
+                  </Badge>
                   {!lead.website && (
                     <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800">
                       No Website

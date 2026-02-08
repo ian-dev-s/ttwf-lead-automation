@@ -1,4 +1,4 @@
-import { LeadScoreFactors, LeadStatus } from '@/types';
+import { LeadScoreFactors, LeadStatus, OutreachType } from '@/types';
 import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -89,6 +89,42 @@ export const kanbanColumnOrder: LeadStatus[] = [
   'REJECTED',
   'INVALID',
 ];
+
+// Outreach type display names
+export const outreachTypeLabels: Record<OutreachType, string> = {
+  EMAIL: 'Email Ready',
+  COLD_CALL: 'Cold Call',
+  WHATSAPP: 'WhatsApp',
+};
+
+// Outreach type colors for UI badges
+export const outreachTypeColors: Record<OutreachType, string> = {
+  EMAIL: 'bg-blue-100 text-blue-800',
+  COLD_CALL: 'bg-orange-100 text-orange-800',
+  WHATSAPP: 'bg-green-100 text-green-800',
+};
+
+// Outreach type icon names (lucide-react icon names)
+export const outreachTypeIcons: Record<OutreachType, string> = {
+  EMAIL: 'Mail',
+  COLD_CALL: 'Phone',
+  WHATSAPP: 'MessageCircle',
+};
+
+/**
+ * Determine the outreach type for a lead based on available contact info.
+ * Priority: EMAIL > WHATSAPP > COLD_CALL
+ */
+export function determineOutreachType(lead: {
+  email?: string | null;
+  phone?: string | null;
+  metadata?: Record<string, unknown> | null;
+}): OutreachType {
+  if (lead.email) return 'EMAIL';
+  const whatsapp = lead.metadata?.whatsappNumber as string | undefined;
+  if (whatsapp) return 'WHATSAPP';
+  return 'COLD_CALL';
+}
 
 // Format phone number for display
 export function formatPhoneNumber(phone: string): string {

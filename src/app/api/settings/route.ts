@@ -9,6 +9,7 @@ const settingsSchema = z.object({
   leadGenerationEnabled: z.boolean().optional(),
   scrapeDelayMs: z.number().min(500).max(10000).optional(),
   maxLeadsPerRun: z.number().min(1).max(50).optional(),
+  minEmailLeadsPerRun: z.number().min(0).max(50).optional(),
   searchRadiusKm: z.number().min(5).max(200).optional(),
   minGoogleRating: z.number().min(0).max(5).optional(),
   targetIndustries: z.array(z.string()).optional(),
@@ -58,6 +59,7 @@ export async function GET(_request: NextRequest) {
         leadGenerationEnabled: true,
         scrapeDelayMs: 2000,
         maxLeadsPerRun: 20,
+        minEmailLeadsPerRun: 5,
         searchRadiusKm: 50,
         minGoogleRating: 4.0,
         targetIndustries: [

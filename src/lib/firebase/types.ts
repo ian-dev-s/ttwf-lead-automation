@@ -14,6 +14,7 @@ import type {
   MessageStatus,
   AIProvider,
   JobStatus,
+  OutreachType,
 } from '@/types';
 
 // ─── Auth / Users ──────────────────────────────────────────
@@ -44,6 +45,7 @@ export interface TeamSettingsDoc {
   // Scraping
   scrapeDelayMs: number;
   maxLeadsPerRun: number;
+  minEmailLeadsPerRun: number;
   searchRadiusKm: number;
   minGoogleRating: number;
 
@@ -170,6 +172,7 @@ export interface LeadDoc {
   reviewCount: number | null;
   description: string | null;
   status: LeadStatus;
+  outreachType: OutreachType;
   source: string | null;
   score: number;
   notes: string | null;
@@ -231,6 +234,7 @@ export interface ScrapingJobDoc {
   status: JobStatus;
   leadsRequested: number;
   leadsFound: number;
+  emailLeadsFound: number;
   searchQuery: string | null;
   categories: string[];
   locations: string[];

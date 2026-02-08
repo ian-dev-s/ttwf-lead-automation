@@ -1,7 +1,8 @@
-import type { Lead } from '@/types';
+import type { Lead, OutreachType } from '@/types';
 import { Browser, chromium } from 'playwright';
 import { generatePersonalizedMessage } from '../ai/personalize';
 import { SmartEnrichedLead, smartEnrichLead } from '../ai/smart-enricher';
+import { determineOutreachType } from '../utils';
 import {
     DEFAULT_COUNTRY_CODE,
     getCitiesForCountry,
@@ -402,6 +403,11 @@ async function saveSmartEnrichedLead(lead: SmartEnrichedLead, teamId: string, co
       reviewCount: lead.reviewCount || null,
       description: lead.description || null,
       status: 'NEW' as const,
+      outreachType: determineOutreachType({
+        email: lead.emails[0] || null,
+        phone: lead.phones[0] || null,
+        metadata: { whatsappNumber: lead.whatsappNumber },
+      }),
       source: 'ai_scraper',
       score,
       notes: buildLeadNotes(lead),
@@ -523,10 +529,11 @@ export async function runScrapingJob(teamId: string, jobId: string): Promise<voi
     startedAt: new Date(),
   });
 
-  // Read scrape delay from team settings
+  // Read scrape delay and email lead target from team settings
   const settingsSnap = await teamSettingsDoc(teamId).get();
   const settings = settingsSnap.exists ? settingsSnap.data()! : null;
   const scrapeDelay = (settings?.scrapeDelayMs as number) || 500;
+  const minEmailLeadsPerRun = (settings?.minEmailLeadsPerRun as number) || 0;
 
   const scraper = createGoogleMapsScraper({
     headless: true,
@@ -537,6 +544,7 @@ export async function runScrapingJob(teamId: string, jobId: string): Promise<voi
   scraper.setJobId(jobId);
 
   let leadsFound = 0;
+  let emailLeadsFound = 0;
   let browser: Browser | null = null;
 
   runningJobs.set(jobId, { cancelled: false, completed: false, scraper, browser: null, teamId });
@@ -581,6 +589,7 @@ export async function runScrapingJob(teamId: string, jobId: string): Promise<voi
 
     jobLog.success(jobId, `Starting AI-Powered Scraping Job`, {
       target: job.leadsRequested,
+      minEmailTarget: minEmailLeadsPerRun,
       country: countryName,
       categories: categories.length,
       locations: locations.length,
@@ -723,18 +732,39 @@ export async function runScrapingJob(teamId: string, jobId: string): Promise<voi
                 await saveToAnalyzedHistory(teamId, business, location, countryCode, true, `Converted to lead (Tier ${enrichedLead.qualificationTier})`, websiteQualityScore, enrichedLead.googleMapsUrl);
                 leadsFound++;
 
+                // Track email leads separately
+                const hasEmail = enrichedLead.emails.length > 0;
+                if (hasEmail) {
+                  emailLeadsFound++;
+                }
+
                 jobLog.success(jobId, `LEAD SAVED: ${business.name}`, {
                   score: enrichedLead.leadScore,
                   tier: enrichedLead.qualificationTier,
+                  hasEmail,
                 });
-                jobLog.progress(jobId, `Progress: ${leadsFound}/${job.leadsRequested} leads found`);
 
-                await scrapingJobDoc(teamId, jobId).update({ leadsFound });
+                const emailProgress = minEmailLeadsPerRun > 0
+                  ? ` (${emailLeadsFound}/${minEmailLeadsPerRun} with email)`
+                  : '';
+                jobLog.progress(jobId, `Progress: ${leadsFound}/${job.leadsRequested} leads found${emailProgress}`);
 
-                if (leadsFound >= job.leadsRequested) {
-                  jobLog.success(jobId, `TARGET REACHED! Found ${leadsFound}/${job.leadsRequested} leads. Stopping.`);
+                await scrapingJobDoc(teamId, jobId).update({ leadsFound, emailLeadsFound });
+
+                // Stop only when both targets are met:
+                // 1. Total leads target reached
+                // 2. Email leads target reached (if configured)
+                const totalTargetMet = leadsFound >= job.leadsRequested;
+                const emailTargetMet = minEmailLeadsPerRun <= 0 || emailLeadsFound >= minEmailLeadsPerRun;
+
+                if (totalTargetMet && emailTargetMet) {
+                  jobLog.success(jobId, `TARGET REACHED! Found ${leadsFound}/${job.leadsRequested} leads (${emailLeadsFound} with email). Stopping.`);
                   markJobCompleted(jobId);
                   break categoryLoop;
+                }
+
+                if (totalTargetMet && !emailTargetMet) {
+                  jobLog.info(jobId, `Total target reached but still need ${minEmailLeadsPerRun - emailLeadsFound} more email leads. Continuing search...`);
                 }
               }
             } catch (enrichError) {
@@ -823,6 +853,7 @@ export async function scheduleScrapingJob(options: {
     status: 'SCHEDULED',
     leadsRequested: options.leadsRequested,
     leadsFound: 0,
+    emailLeadsFound: 0,
     searchQuery: null,
     categories: options.categories || [],
     locations: options.locations || [],

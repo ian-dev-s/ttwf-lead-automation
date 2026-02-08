@@ -73,6 +73,7 @@ export default function ScraperPage() {
     leadGenerationEnabled: true,
     scrapeDelayMs: 2000,
     maxLeadsPerRun: 20,
+    minEmailLeadsPerRun: 5,
     searchRadiusKm: 50,
     minGoogleRating: 4.0,
   });
@@ -163,6 +164,7 @@ export default function ScraperPage() {
           leadGenerationEnabled: settingsData.leadGenerationEnabled ?? true,
           scrapeDelayMs: settingsData.scrapeDelayMs ?? 2000,
           maxLeadsPerRun: settingsData.maxLeadsPerRun ?? 20,
+          minEmailLeadsPerRun: settingsData.minEmailLeadsPerRun ?? 5,
           searchRadiusKm: settingsData.searchRadiusKm ?? 50,
           minGoogleRating: settingsData.minGoogleRating ?? 4.0,
         });
@@ -747,6 +749,28 @@ export default function ScraperPage() {
                     {scrapingSettings.scrapeDelayMs}ms
                   </span>
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Min Email Leads Per Run</Label>
+                <div className="flex items-center gap-4">
+                  <Slider
+                    value={[scrapingSettings.minEmailLeadsPerRun]}
+                    onValueChange={(v) =>
+                      setScrapingSettings((prev) => ({ ...prev, minEmailLeadsPerRun: v[0] }))
+                    }
+                    min={0}
+                    max={20}
+                    step={1}
+                    className="flex-1"
+                  />
+                  <span className="w-12 text-center font-medium">
+                    {scrapingSettings.minEmailLeadsPerRun}
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Keep searching until at least this many leads with email are found. Set to 0 to disable.
+                </p>
               </div>
             </div>
 

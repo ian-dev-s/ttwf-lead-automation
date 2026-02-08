@@ -140,7 +140,8 @@ export async function smartEnrichLead(
   }
   
   // OPTIMIZATION: Create multiple pages for parallel scraping
-  const [websitePage, searchPage] = await Promise.all([
+  const [websitePage, searchPage, socialPage] = await Promise.all([
+    browser.newPage(),
     browser.newPage(),
     browser.newPage(),
   ]);
@@ -151,19 +152,21 @@ export async function smartEnrichLead(
       throw new JobCancelledError(cancellationToken.id);
     }
     
-    // OPTIMIZATION: Scrape website AND Google Search IN PARALLEL
-    console.log(`   [Worker ${workerId}] ⚡ Parallel scraping: website + Google Search`);
+    // OPTIMIZATION: Scrape website + contact search + social search + generic search IN PARALLEL
+    console.log(`   [Worker ${workerId}] ⚡ Parallel scraping: website + contact search + social search + generic search`);
     
-    const [websiteData, searchData] = await Promise.all([
+    const [websiteData, searchData, socialSearchData] = await Promise.all([
       // Scrape website if available
       business.website 
         ? scrapeWebsiteWithAI(websitePage, business.website, business.name, cancellationToken)
         : Promise.resolve(null),
-      // Search Google for additional information
+      // Search Google for contact information
       searchGoogleWithAI(searchPage, business.name, location, cancellationToken),
+      // Search Google for social media profiles
+      searchSocialMediaWithAI(socialPage, business.name, location, cancellationToken),
     ]);
     
-    // Check cancellation after scraping
+    // Check cancellation after first parallel batch
     if (cancellationToken?.isCancelled) {
       throw new JobCancelledError(cancellationToken.id);
     }
@@ -182,8 +185,32 @@ export async function smartEnrichLead(
       }
     }
     
-    // Check Facebook if found in search results (reuse searchPage)
-    facebookUrl = findFacebookUrl(searchData?.text || '', business.name);
+    if (socialSearchData) {
+      dataSources.push(socialSearchData.dataSource);
+      if (socialSearchData.text) {
+        textSources.push({ source: 'social_search', text: socialSearchData.text });
+      }
+    }
+    
+    // Phase 2: Run generic search (reuse socialPage) and scrape Facebook if found
+    if (cancellationToken?.isCancelled) {
+      throw new JobCancelledError(cancellationToken.id);
+    }
+    
+    // Run generic search for more business details
+    console.log(`   [Worker ${workerId}] 🔍 Running generic search for more details`);
+    const genericSearchData = await searchGenericWithAI(socialPage, business.name, location, cancellationToken);
+    
+    if (genericSearchData) {
+      dataSources.push(genericSearchData.dataSource);
+      if (genericSearchData.text) {
+        textSources.push({ source: 'generic_search', text: genericSearchData.text });
+      }
+    }
+    
+    // Check Facebook from both contact search and social search results
+    const allSearchText = [searchData?.text || '', socialSearchData?.text || ''].join('\n');
+    facebookUrl = findFacebookUrl(allSearchText, business.name);
     if (facebookUrl && !cancellationToken?.isCancelled) {
       console.log(`   [Worker ${workerId}] 📘 Found Facebook: ${facebookUrl}`);
       const fbData = await scrapeFacebookWithAI(searchPage, facebookUrl, business.name, cancellationToken);
@@ -192,6 +219,16 @@ export async function smartEnrichLead(
         if (fbData.text) {
           textSources.push({ source: 'facebook', text: fbData.text });
         }
+      }
+    }
+    
+    // Also try to scrape found Instagram profile (reuse websitePage)
+    const instagramUrl = findInstagramUrl(allSearchText, websiteData?.dataSource?.data?.socialMedia?.instagram);
+    if (instagramUrl && !cancellationToken?.isCancelled) {
+      console.log(`   [Worker ${workerId}] 📸 Found Instagram: ${instagramUrl}`);
+      const igData = await scrapeInstagramWithAI(websitePage, instagramUrl, business.name, cancellationToken);
+      if (igData) {
+        dataSources.push(igData.dataSource);
       }
     }
     
@@ -205,6 +242,7 @@ export async function smartEnrichLead(
     await Promise.all([
       websitePage.close().catch(() => {}),
       searchPage.close().catch(() => {}),
+      socialPage.close().catch(() => {}),
     ]);
   }
   
@@ -478,6 +516,156 @@ async function searchGoogleWithAI(
 }
 
 /**
+ * Search Google for social media profiles of a business
+ * Dedicated social media search to find LinkedIn, Instagram, Twitter, etc.
+ * SUPPORTS: Cancellation for immediate job stopping
+ */
+async function searchSocialMediaWithAI(
+  page: Page,
+  businessName: string,
+  location: string,
+  cancellationToken?: CancellationToken
+): Promise<{ dataSource: DataSource; text: string } | null> {
+  if (cancellationToken?.isCancelled) {
+    return null;
+  }
+  
+  try {
+    const query = `"${businessName}" ${location} site:linkedin.com OR site:instagram.com OR site:facebook.com OR site:twitter.com`;
+    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+    
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    
+    if (cancellationToken?.isCancelled) {
+      return null;
+    }
+    
+    await sleepWithCancellation(FAST_DELAY, cancellationToken);
+    
+    // Extract search results text
+    const text = await page.evaluate(() => {
+      const results = document.querySelectorAll('#search .g');
+      let text = '';
+      results.forEach((result, i) => {
+        if (i < 8) {
+          text += (result as HTMLElement).innerText + '\n\n';
+        }
+      });
+      return text;
+    });
+    
+    // Extract all social media URLs found
+    const socialUrls = await page.evaluate(() => {
+      const social: Record<string, string> = {};
+      const links = document.querySelectorAll('#search a');
+      links.forEach(link => {
+        const href = link.getAttribute('href');
+        if (!href) return;
+        if (href.includes('facebook.com') && !social.facebook) {
+          social.facebook = href;
+        }
+        if (href.includes('instagram.com') && !social.instagram) {
+          social.instagram = href;
+        }
+        if ((href.includes('twitter.com') || href.includes('x.com')) && !social.twitter) {
+          social.twitter = href;
+        }
+        if (href.includes('linkedin.com') && !social.linkedin) {
+          social.linkedin = href;
+        }
+        if (href.includes('tiktok.com') && !social.tiktok) {
+          social.tiktok = href;
+        }
+      });
+      return social;
+    });
+    
+    return {
+      dataSource: {
+        source: 'social_search',
+        confidence: 65,
+        data: {
+          name: businessName,
+          socialMedia: socialUrls,
+        },
+      },
+      text,
+    };
+  } catch (error) {
+    console.error('Failed to search social media:', error);
+    return null;
+  }
+}
+
+/**
+ * Search Google for general business information, reviews, and services
+ * Broader search to find more details about the business
+ * SUPPORTS: Cancellation for immediate job stopping
+ */
+async function searchGenericWithAI(
+  page: Page,
+  businessName: string,
+  location: string,
+  cancellationToken?: CancellationToken
+): Promise<{ dataSource: DataSource; text: string } | null> {
+  if (cancellationToken?.isCancelled) {
+    return null;
+  }
+  
+  try {
+    const query = `"${businessName}" ${location} reviews services about`;
+    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+    
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    
+    if (cancellationToken?.isCancelled) {
+      return null;
+    }
+    
+    await sleepWithCancellation(FAST_DELAY, cancellationToken);
+    
+    // Extract search results text
+    const text = await page.evaluate(() => {
+      const results = document.querySelectorAll('#search .g');
+      let text = '';
+      results.forEach((result, i) => {
+        if (i < 8) {
+          text += (result as HTMLElement).innerText + '\n\n';
+        }
+      });
+      return text;
+    });
+    
+    // Also try to extract email addresses and phone numbers from results
+    const contactInfo = await page.evaluate(() => {
+      const bodyText = document.body?.innerText || '';
+      const emailMatches = bodyText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+      const phoneMatches = bodyText.match(/(?:\+27|0)[\s.-]?\d{2}[\s.-]?\d{3}[\s.-]?\d{4}/g) || [];
+      return {
+        emails: [...new Set(emailMatches)],
+        phones: [...new Set(phoneMatches)],
+      };
+    });
+    
+    return {
+      dataSource: {
+        source: 'generic_search',
+        confidence: 50,
+        data: {
+          name: businessName,
+          phones: contactInfo.phones,
+          emails: contactInfo.emails,
+        },
+      },
+      text,
+    };
+  } catch (error) {
+    console.error('Failed to run generic search:', error);
+    return null;
+  }
+}
+
+/**
  * Scrape Facebook page for business information
  * OPTIMIZED: Reduced timeout and delay
  * SUPPORTS: Cancellation for immediate job stopping
@@ -559,6 +747,81 @@ function findFacebookUrl(text: string, businessName: string): string | null {
   
   // Return first match if no name match
   return matches[0];
+}
+
+/**
+ * Find Instagram URL in search results or website data
+ */
+function findInstagramUrl(searchText: string, websiteInstagramUrl?: string): string | null {
+  // Prefer URL from website scrape
+  if (websiteInstagramUrl) return websiteInstagramUrl;
+  
+  const igPattern = /https?:\/\/(?:www\.)?instagram\.com\/[^\s"'<>?]+/gi;
+  const matches = searchText.match(igPattern);
+  
+  if (!matches) return null;
+  
+  // Filter out generic Instagram URLs
+  const filtered = matches.filter(url => {
+    const path = url.replace(/https?:\/\/(?:www\.)?instagram\.com\/?/i, '');
+    // Skip very short paths (likely generic pages)
+    return path.length > 2 && !path.startsWith('explore') && !path.startsWith('p/');
+  });
+  
+  return filtered[0] || null;
+}
+
+/**
+ * Scrape Instagram profile for basic business info
+ * Extracts bio text and any contact information visible on the profile
+ * SUPPORTS: Cancellation for immediate job stopping
+ */
+async function scrapeInstagramWithAI(
+  page: Page,
+  url: string,
+  businessName: string,
+  cancellationToken?: CancellationToken
+): Promise<{ dataSource: DataSource } | null> {
+  if (cancellationToken?.isCancelled) {
+    return null;
+  }
+  
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    
+    if (cancellationToken?.isCancelled) {
+      return null;
+    }
+    
+    await sleepWithCancellation(FAST_DELAY, cancellationToken);
+    
+    // Extract basic info from the page (Instagram limits what's visible without login)
+    const data = await page.evaluate(() => {
+      const text = document.body?.innerText || '';
+      const emailMatches = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+      const phoneMatches = text.match(/(?:\+27|0)[\s.-]?\d{2}[\s.-]?\d{3}[\s.-]?\d{4}/g) || [];
+      return {
+        emails: [...new Set(emailMatches)],
+        phones: [...new Set(phoneMatches)],
+      };
+    });
+    
+    return {
+      dataSource: {
+        source: 'instagram',
+        confidence: 55,
+        data: {
+          name: businessName,
+          phones: data.phones,
+          emails: data.emails,
+          socialMedia: { instagram: url },
+        },
+      },
+    };
+  } catch (error) {
+    console.error('Failed to scrape Instagram:', error);
+    return null;
+  }
 }
 
 /**

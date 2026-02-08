@@ -61,6 +61,7 @@ interface TeamSettingsState {
   leadGenerationEnabled: boolean;
   scrapeDelayMs: number;
   maxLeadsPerRun: number;
+  minEmailLeadsPerRun: number;
   searchRadiusKm: number;
   minGoogleRating: number;
   targetIndustries: string[];

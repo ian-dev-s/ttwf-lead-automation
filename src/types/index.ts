@@ -54,6 +54,13 @@ export const JobStatus = {
 } as const;
 export type JobStatus = (typeof JobStatus)[keyof typeof JobStatus];
 
+export const OutreachType = {
+  EMAIL: 'EMAIL',
+  COLD_CALL: 'COLD_CALL',
+  WHATSAPP: 'WHATSAPP',
+} as const;
+export type OutreachType = (typeof OutreachType)[keyof typeof OutreachType];
+
 // ─── Document types (used across the app) ──────────────────
 
 /** A Lead document with its Firestore id */
@@ -79,6 +86,7 @@ export interface Lead {
   reviewCount: number | null;
   description: string | null;
   status: LeadStatus;
+  outreachType: OutreachType;
   source: string | null;
   score: number;
   notes: string | null;
@@ -280,6 +288,7 @@ export interface TeamSettingsInput {
   leadGenerationEnabled?: boolean;
   scrapeDelayMs?: number;
   maxLeadsPerRun?: number;
+  minEmailLeadsPerRun?: number;
   searchRadiusKm?: number;
   minGoogleRating?: number;
   targetIndustries?: string[];

@@ -12,7 +12,7 @@ import { generateText } from 'ai';
 import { getLanguageModel } from './providers';
 
 export interface DataSource {
-  source: 'google_maps' | 'website' | 'facebook' | 'google_search' | 'manual';
+  source: 'google_maps' | 'website' | 'facebook' | 'google_search' | 'social_search' | 'generic_search' | 'instagram' | 'manual';
   confidence: number; // 0-100
   data: {
     name?: string;
