@@ -914,29 +914,30 @@ export async function generateMessagesForNewLeads(teamId: string): Promise<numbe
 
     if (!msgSnap.empty) continue; // Already has messages
 
-    try {
-      if (lead.email) {
-        const emailMessage = await generatePersonalizedMessage({
-          teamId,
-          lead,
-        });
+    // Skip leads without email - no message to generate
+    if (!lead.email) continue;
 
-        const now = new Date();
-        await messagesCollection(teamId).doc().set({
-          leadId: doc.id,
-          type: 'EMAIL',
-          subject: emailMessage.subject || null,
-          content: emailMessage.content,
-          status: 'DRAFT',
-          sentAt: null,
-          error: null,
-          generatedBy: null,
-          aiProvider: null,
-          aiModel: null,
-          createdAt: now,
-          updatedAt: now,
-        });
-      }
+    try {
+      const emailMessage = await generatePersonalizedMessage({
+        teamId,
+        lead,
+      });
+
+      const now = new Date();
+      await messagesCollection(teamId).doc().set({
+        leadId: doc.id,
+        type: 'EMAIL',
+        subject: emailMessage.subject || null,
+        content: emailMessage.content,
+        status: 'DRAFT',
+        sentAt: null,
+        error: null,
+        generatedBy: null,
+        aiProvider: null,
+        aiModel: null,
+        createdAt: now,
+        updatedAt: now,
+      });
 
       await leadDoc(teamId, doc.id).update({
         status: 'MESSAGE_READY',

@@ -207,28 +207,22 @@ async function seedDefaultTemplates(teamId: string, now: Date) {
       name: 'Initial Outreach',
       description: 'First contact email to businesses without a website or with a low-quality website',
       purpose: 'outreach',
-      systemPrompt: `You are an expert copywriter helping businesses establish their online presence.
+      systemPrompt: `You write outreach emails for The Tiny Web Factory using the SPEAR framework.
 
-Your task is to write personalized outreach emails to businesses that could benefit from having a professional website. The messages should:
+SPEAR rules:
+- SHORT: Keep the body under 100 words. 2-3 short paragraphs max.
+- PERSONAL: Mention the business by name. Reference their Google rating, reviews, industry, or location. Never sound like a mass email.
+- EXPECTS A REPLY: End with a casual question (e.g., "Keen to have a look?" or "Want us to put something together?").
 
-1. Be warm, professional, and genuine
-2. Reference specific details about their business (ratings, reviews, location)
-3. Highlight their strengths (great reviews, established reputation)
-4. Gently mention the opportunity (no website or low-quality website)
-5. Present the offer clearly (free draft website, no obligation)
-6. Include a clear call to action
-
-Key guidelines:
-- Never be pushy or salesy
-- Focus on how we can help them grow
-- Be respectful of their time
-- For EMAIL messages: Use HTML formatting. Use <p>, <br>, <strong>, <em>, <a href="..."> tags. Do NOT use markdown.`,
-      subjectLine: 'A Professional Website for {businessName}',
+Tone: Casual and friendly — not corporate or formal. Like messaging someone you know.
+Never be pushy or salesy. Use South African English spelling.
+For EMAIL messages: Use HTML formatting with <p>, <br>, <strong>, <em>, <a> tags. Do NOT use markdown.`,
+      subjectLine: 'Quick idea for {businessName}',
       isActive: true,
       isDefault: true,
-      tone: 'professional',
-      maxLength: 2000,
-      mustInclude: ['free draft', 'no obligation'],
+      tone: 'casual-friendly',
+      maxLength: 800,
+      mustInclude: ['free draft', 'no obligation', 'question at the end'],
       avoidTopics: ['competitor names', 'pricing details', 'negative comments about current website'],
       createdAt: now,
       updatedAt: now,
@@ -237,22 +231,22 @@ Key guidelines:
       name: 'Friendly Follow-up',
       description: 'Follow-up email for businesses that have not responded to the initial outreach',
       purpose: 'follow_up',
-      systemPrompt: `You are an expert copywriter. You are writing a follow-up email to a business that was previously contacted but has not responded.
+      systemPrompt: `You write follow-up emails for The Tiny Web Factory using the SPEAR framework.
 
-Guidelines:
-1. Be polite and not pushy - acknowledge they are busy
-2. Briefly reference the previous email without repeating all the details
-3. Reiterate the key value proposition (free draft website)
-4. Keep it shorter than the initial outreach
-5. Provide an easy call to action
-6. For EMAIL messages: Use HTML formatting with <p>, <br>, <strong>, <em>, <a> tags. Do NOT use markdown.
-7. The tone should be warm and understanding, not aggressive or desperate`,
-      subjectLine: 'Following up - Website for {businessName}',
+SPEAR rules:
+- SHORT: Even shorter than the first email — under 60 words for the body.
+- PERSONAL: Reference the business by name. Nod to the previous email casually.
+- EXPECTS A REPLY: End with a simple yes/no question (e.g., "Still keen?" or "Should we go ahead?").
+
+Tone: Casual and understanding — acknowledge they're busy, no guilt-tripping.
+Never desperate or aggressive. Use South African English spelling.
+For EMAIL messages: Use HTML formatting with <p>, <br>, <strong>, <em>, <a> tags. Do NOT use markdown.`,
+      subjectLine: 'Just checking in - {businessName}',
       isActive: true,
       isDefault: true,
-      tone: 'friendly',
-      maxLength: 1000,
-      mustInclude: ['free draft'],
+      tone: 'casual-friendly',
+      maxLength: 500,
+      mustInclude: ['free draft', 'question at the end'],
       avoidTopics: ['competitor names', 'pricing details', 'guilt-tripping'],
       createdAt: now,
       updatedAt: now,
@@ -261,21 +255,22 @@ Guidelines:
       name: 'Re-engagement',
       description: 'Re-engage businesses that showed initial interest but went cold',
       purpose: 're_engagement',
-      systemPrompt: `You are an expert copywriter. You are writing a re-engagement email to a business that showed some initial interest but has gone quiet.
+      systemPrompt: `You write re-engagement emails for The Tiny Web Factory using the SPEAR framework.
 
-Guidelines:
-1. Be respectful of their time and decision
-2. Offer something new or a fresh perspective
-3. Keep it very brief and to the point
-4. Make it easy to say yes or no
-5. For EMAIL messages: Use HTML formatting with <p>, <br>, <strong>, <em>, <a> tags. Do NOT use markdown.
-6. Consider mentioning a seasonal offer or new portfolio piece`,
-      subjectLine: 'Quick update from us',
+SPEAR rules:
+- SHORT: Ultra-brief — under 50 words for the body. 1-2 short paragraphs.
+- PERSONAL: Use their name and reference something specific about their business or previous interest.
+- EXPECTS A REPLY: End with an easy yes/no question (e.g., "Worth another look?" or "Should we give it another go?").
+
+Tone: Relaxed and low-pressure — respect their time. Offer a fresh angle or mention new work.
+No pressure tactics. Use South African English spelling.
+For EMAIL messages: Use HTML formatting with <p>, <br>, <strong>, <em>, <a> tags. Do NOT use markdown.`,
+      subjectLine: 'Quick thought for {businessName}',
       isActive: true,
       isDefault: true,
-      tone: 'casual',
-      maxLength: 800,
-      mustInclude: [],
+      tone: 'casual-friendly',
+      maxLength: 400,
+      mustInclude: ['question at the end'],
       avoidTopics: ['competitor names', 'pricing details', 'pressure tactics'],
       createdAt: now,
       updatedAt: now,

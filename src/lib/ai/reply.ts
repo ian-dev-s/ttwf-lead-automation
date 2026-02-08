@@ -15,6 +15,7 @@ import {
 } from '@/lib/firebase/collections';
 import { REPLY_SYSTEM_PROMPT, generateReplyPrompt, buildEnhancedSystemPrompt } from './prompts';
 import { defaultModel, getLanguageModel, type SimpleProvider } from './providers';
+import type { AIDataUsed } from '@/types';
 
 export interface InboundReplyParams {
   teamId: string;
@@ -33,6 +34,7 @@ export interface InboundReplyResult {
   content: string;
   provider: string;
   model: string;
+  dataUsed: AIDataUsed;
 }
 
 /**
@@ -102,6 +104,31 @@ export async function generateInboundReply(
     leadContext,
   });
 
+  // Collect data-used metadata for transparency
+  const dataUsed: AIDataUsed = {
+    leadData: {
+      businessName: leadContext?.businessName || fromName,
+      location: leadContext?.location || 'Unknown',
+      industry: leadContext?.industry || undefined,
+      hasWebsite: false,
+      hasFacebook: false,
+    },
+    templateName: null,
+    templatePurpose: 'reply',
+    aiSettings: {
+      tone: trainingSettings?.aiTone || null,
+      writingStyle: trainingSettings?.aiWritingStyle || null,
+      customInstructions: trainingSettings?.aiCustomInstructions
+        ? trainingSettings.aiCustomInstructions.substring(0, 200) + (trainingSettings.aiCustomInstructions.length > 200 ? '...' : '')
+        : null,
+    },
+    knowledgeItemsUsed: knowledgeItems.map((k) => k.title),
+    sampleResponsesCount: sampleResponses.length,
+    model: finalModel,
+    provider: finalProvider,
+    previousMessageUsed: true,
+  };
+
   // Generate with retry
   const maxRetries = 3;
   let lastError: Error | null = null;
@@ -146,6 +173,7 @@ export async function generateInboundReply(
         content,
         provider: finalProvider,
         model: finalModel,
+        dataUsed,
       };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));

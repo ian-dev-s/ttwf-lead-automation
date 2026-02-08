@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Brain, BookOpen, MessageSquare, Plus, Pencil, Trash2, Loader2, Save, Lightbulb, X } from 'lucide-react';
+import { Brain, BookOpen, MessageSquare, Plus, Pencil, Trash2, Loader2, Save, Lightbulb, X, Globe, Sparkles } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 interface TrainingConfig {
@@ -38,19 +38,21 @@ interface SampleResponse {
 }
 
 const toneOptions = [
-  { value: 'professional', label: 'Professional' },
-  { value: 'professional-friendly', label: 'Professional & Friendly' },
-  { value: 'friendly', label: 'Friendly' },
+  { value: 'casual-friendly', label: 'Casual & Friendly (SPEAR)' },
   { value: 'casual', label: 'Casual' },
+  { value: 'friendly', label: 'Friendly' },
+  { value: 'professional-friendly', label: 'Professional & Friendly' },
+  { value: 'professional', label: 'Professional' },
   { value: 'enthusiastic', label: 'Enthusiastic' },
   { value: 'formal', label: 'Formal' },
 ];
 
 const writingStyleOptions = [
+  { value: 'conversational', label: 'Conversational (SPEAR)' },
   { value: 'concise', label: 'Concise' },
+  { value: 'persuasive', label: 'Persuasive' },
   { value: 'detailed', label: 'Detailed' },
   { value: 'storytelling', label: 'Storytelling' },
-  { value: 'persuasive', label: 'Persuasive' },
   { value: 'educational', label: 'Educational' },
 ];
 
@@ -78,6 +80,13 @@ export default function AITrainingPage() {
   const [sampleQuestion, setSampleQuestion] = useState('');
   const [sampleResponse, setSampleResponse] = useState('');
   const [sampleCategory, setSampleCategory] = useState('');
+
+  // Website import
+  const [showWebsiteImport, setShowWebsiteImport] = useState(false);
+  const [websiteUrl, setWebsiteUrl] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importSuccess, setImportSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     fetchData();
@@ -174,6 +183,51 @@ export default function AITrainingPage() {
     } catch (error) {
       console.error('Error deleting knowledge item:', error);
     }
+  };
+
+  const handleWebsiteImport = async () => {
+    if (!websiteUrl) return;
+    
+    setIsImporting(true);
+    setImportError(null);
+    setImportSuccess(null);
+    
+    try {
+      const response = await fetch('/api/ai/knowledge/from-website', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: websiteUrl }),
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        setImportError(data.error || 'Failed to import knowledge');
+        return;
+      }
+      
+      setImportSuccess(`Successfully added ${data.itemsAdded} knowledge items from the website!`);
+      setWebsiteUrl('');
+      await fetchData();
+      
+      // Auto-close after success
+      setTimeout(() => {
+        setShowWebsiteImport(false);
+        setImportSuccess(null);
+      }, 2000);
+    } catch (error) {
+      console.error('Error importing from website:', error);
+      setImportError('Failed to import knowledge. Please try again.');
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const resetWebsiteImport = () => {
+    setShowWebsiteImport(false);
+    setWebsiteUrl('');
+    setImportError(null);
+    setImportSuccess(null);
   };
 
   const resetKnowledgeForm = () => {
@@ -498,19 +552,93 @@ export default function AITrainingPage() {
                   Add business information the AI can reference when generating emails
                 </CardDescription>
               </div>
-              <Button
-                size="sm"
-                onClick={() => {
-                  resetKnowledgeForm();
-                  setShowKnowledgeForm(true);
-                }}
-              >
-                <Plus className="h-4 w-4 mr-1" />
-                Add Item
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowWebsiteImport(true)}
+                >
+                  <Sparkles className="h-4 w-4 mr-1" />
+                  Scan Website using AI
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    resetKnowledgeForm();
+                    setShowKnowledgeForm(true);
+                  }}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Item
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/* Website Import Form */}
+            {showWebsiteImport && (
+              <div className="p-4 border rounded-lg space-y-3 bg-gradient-to-r from-purple-50 to-blue-50 dark:from-purple-950/30 dark:to-blue-950/30 border-purple-200 dark:border-purple-800">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-purple-600" />
+                    <Label className="text-base font-medium">Scan Website using AI</Label>
+                  </div>
+                  <Button variant="ghost" size="sm" onClick={resetWebsiteImport}>
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Enter a website URL and AI will scan the page to extract relevant business information for your knowledge base.
+                </p>
+                <div className="space-y-2">
+                  <Label>Website URL</Label>
+                  <input
+                    type="url"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={websiteUrl}
+                    onChange={(e) => setWebsiteUrl(e.target.value)}
+                    placeholder="https://example.com"
+                    disabled={isImporting}
+                  />
+                </div>
+                
+                {importError && (
+                  <div className="p-3 rounded-md bg-destructive/10 text-destructive text-sm">
+                    {importError}
+                  </div>
+                )}
+                
+                {importSuccess && (
+                  <div className="p-3 rounded-md bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 text-sm">
+                    {importSuccess}
+                  </div>
+                )}
+                
+                <div className="flex gap-2">
+                  <Button 
+                    onClick={handleWebsiteImport} 
+                    disabled={!websiteUrl || isImporting}
+                    className="bg-purple-600 hover:bg-purple-700"
+                  >
+                    {isImporting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Extracting...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="h-4 w-4 mr-2" />
+                        Extract Knowledge
+                      </>
+                    )}
+                  </Button>
+                  <Button variant="outline" onClick={resetWebsiteImport} disabled={isImporting}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {showKnowledgeForm && (
               <div className="p-4 border rounded-lg space-y-3 bg-muted/30">
                 <div className="flex items-center justify-between">

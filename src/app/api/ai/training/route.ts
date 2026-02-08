@@ -4,9 +4,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
 // Default AI training values for The Tiny Web Factory
-const DEFAULT_AI_TONE = 'professional-friendly';
-const DEFAULT_AI_WRITING_STYLE = 'persuasive';
-const DEFAULT_AI_CUSTOM_INSTRUCTIONS = 'Use South African English spelling (e.g., "favour" not "favor", "colour" not "color"). Always mention our free draft website offer. Focus on how a professional website can help grow their business. Be warm and genuine - never pushy or salesy. Reference The Tiny Web Factory as the company name and include our website link: https://thetinywebfactory.com';
+const DEFAULT_AI_TONE = 'casual-friendly';
+const DEFAULT_AI_WRITING_STYLE = 'conversational';
+const DEFAULT_AI_CUSTOM_INSTRUCTIONS = `Follow the SPEAR framework for all messages:
+- Short: Keep emails brief (under 100 words for body). No long paragraphs.
+- Personal: Reference specific details about their business (name, rating, reviews, industry).
+- Expects A Reply: Always end with a casual question that invites a response.
+
+Tone: Friendly and conversational -- like texting a colleague, not writing a corporate letter.
+Use South African English spelling (e.g., "favour", "colour").
+Mention our free draft website offer naturally. Never sound pushy or salesy.
+Reference The Tiny Web Factory and link to https://thetinywebfactory.com.`;
 
 const updateTrainingSchema = z.object({
   aiTone: z.string().nullable().optional(),

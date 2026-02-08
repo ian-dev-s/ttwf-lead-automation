@@ -1,6 +1,7 @@
 'use client';
 
 import { Header } from '@/components/layout/Header';
+import { AIDataUsedPanel } from '@/components/messages/AIDataUsedPanel';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -38,6 +39,7 @@ interface InboundEmail {
   leadId: string | null;
   aiReplyContent: string | null;
   aiReplySubject: string | null;
+  aiDataUsed?: any | null;
   lead?: Lead | null;
 }
 
@@ -252,6 +254,7 @@ export default function InboxPage() {
               status: data.status || e.status,
               ...(data.aiReplyContent !== undefined && { aiReplyContent: data.aiReplyContent }),
               ...(data.aiReplySubject !== undefined && { aiReplySubject: data.aiReplySubject }),
+              ...(data.dataUsed !== undefined && { aiDataUsed: data.dataUsed }),
             };
           })
         );
@@ -483,6 +486,11 @@ export default function InboxPage() {
                       </div>
                     )}
                   </div>
+                  {selectedEmail.aiReplyContent && selectedEmail.aiDataUsed && (
+                    <div className="px-5 pb-4">
+                      <AIDataUsedPanel dataUsed={selectedEmail.aiDataUsed} />
+                    </div>
+                  )}
                 </div>
               </div>
 

@@ -1,4 +1,4 @@
-import type { Lead } from '@/types';
+import type { Lead, AIDataUsed } from '@/types';
 import { generateText } from 'ai';
 import { aiConfigsCollection, aiConfigDoc, emailTemplatesCollection, teamSettingsDoc, aiKnowledgeItemsCollection, aiSampleResponsesCollection, leadDoc, messagesCollection, messageDoc } from '@/lib/firebase/collections';
 import { MESSAGE_SYSTEM_PROMPT, generateMessagePrompt, generateFollowUpPrompt, getGuardrailsPrompt, buildEnhancedSystemPrompt } from './prompts';
@@ -25,6 +25,7 @@ export interface PersonalizedMessage {
   provider: string;
   model: string;
   tokensUsed?: number;
+  dataUsed: AIDataUsed;
 }
 
 // Generate a personalized message for a lead (team-scoped)
@@ -128,6 +129,33 @@ export async function generatePersonalizedMessage(
   const guardrailsAddition = getGuardrailsPrompt(templateGuardrails);
   const fullPrompt = userPrompt + guardrailsAddition;
 
+  // Collect data-used metadata for transparency
+  const dataUsed: AIDataUsed = {
+    leadData: {
+      businessName: lead.businessName,
+      location: lead.location,
+      industry: lead.industry || undefined,
+      googleRating: lead.googleRating || undefined,
+      reviewCount: lead.reviewCount || undefined,
+      hasWebsite: Boolean(lead.website),
+      hasFacebook: Boolean(lead.facebookUrl),
+    },
+    templateName: template?.name || null,
+    templatePurpose: template?.purpose || templatePurpose,
+    aiSettings: {
+      tone: trainingSettings?.aiTone || null,
+      writingStyle: trainingSettings?.aiWritingStyle || null,
+      customInstructions: trainingSettings?.aiCustomInstructions
+        ? trainingSettings.aiCustomInstructions.substring(0, 200) + (trainingSettings.aiCustomInstructions.length > 200 ? '...' : '')
+        : null,
+    },
+    knowledgeItemsUsed: knowledgeItems.map((k) => k.title),
+    sampleResponsesCount: sampleResponses.length,
+    model: finalModel,
+    provider: finalProvider,
+    previousMessageUsed: Boolean(previousMessage),
+  };
+
   // Retry logic for network issues
   const maxRetries = 3;
   let lastError: Error | null = null;
@@ -175,6 +203,7 @@ export async function generatePersonalizedMessage(
         provider: finalProvider,
         model: finalModel,
         tokensUsed: result.usage?.totalTokens,
+        dataUsed,
       };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
@@ -247,35 +276,28 @@ export async function regenerateMessage(
   });
 }
 
-// Quick personalization without full AI (fallback)
+// Quick personalization without full AI (fallback) — SPEAR style
 export function quickPersonalize(lead: Lead): string {
-  const greeting = 'Good day,';
   const ratingMention =
     lead.googleRating && lead.reviewCount
-      ? `We noticed ${lead.businessName} has an excellent ${lead.googleRating}-star rating with ${lead.reviewCount} reviews on Google - that's fantastic!`
-      : `We came across ${lead.businessName} and were impressed by your business.`;
+      ? `${lead.googleRating}-star rating with ${lead.reviewCount} reviews — that's awesome!`
+      : `really like what you're doing`;
 
   const websiteMention = lead.website
-    ? `We noticed your current website might benefit from a refresh.`
-    : `We noticed you don't currently have a website.`;
+    ? `your current site could probably do even more for you`
+    : `you don't have a website yet`;
 
-  const template = `${greeting}
+  return `Hey there,
 
-${ratingMention}
+Came across ${lead.businessName} and ${ratingMention}. Noticed ${websiteMention}.
 
-${websiteMention}
+We'd love to put together a free draft landing page for you — zero obligation, just to show you what's possible.
 
-We wanted to reach out to see whether you might be interested in having a professional website to further showcase your business and attract more customers online.
+Keen to have a look?
 
-To make this easy, we'll create a draft landing page at no cost. You'll be able to review it, suggest changes, and ensure it suits your business needs perfectly. Once you're happy, we'll send you an invoice to take the website live.
-
-We also offer professional business email addresses to help strengthen your brand's credibility.
-
-If you would like us to contact you, please reply and let us know a convenient time.
-
-The Team`;
-
-  return template;
+Cheers,
+The Tiny Web Factory Team
+https://thetinywebfactory.com`;
 }
 
 // Generate a follow-up message for a lead (team-scoped)
@@ -283,7 +305,7 @@ export async function generateFollowUpMessage(
   teamId: string,
   leadId: string,
   previousMessageId?: string
-): Promise<{ id: string; content: string; subject?: string; status: string }> {
+): Promise<{ id: string; content: string; subject?: string; status: string; dataUsed?: AIDataUsed }> {
   const leadSnap = await leadDoc(teamId, leadId).get();
 
   if (!leadSnap.exists) {
@@ -345,6 +367,7 @@ export async function generateFollowUpMessage(
     generatedBy: 'ai',
     aiProvider: personalizedMessage.provider,
     aiModel: personalizedMessage.model,
+    dataUsed: personalizedMessage.dataUsed || null,
     createdAt: now,
     updatedAt: now,
   });
@@ -354,5 +377,6 @@ export async function generateFollowUpMessage(
     content: personalizedMessage.content,
     subject: personalizedMessage.subject,
     status: 'DRAFT',
+    dataUsed: personalizedMessage.dataUsed,
   };
 }

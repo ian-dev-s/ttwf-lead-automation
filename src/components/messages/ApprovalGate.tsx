@@ -19,6 +19,7 @@ import {
     TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { Lead, Message } from '@/types';
+import { AIDataUsedPanel } from './AIDataUsedPanel';
 import {
     AlertTriangle,
     Bot,
@@ -243,6 +244,12 @@ export function ApprovalGate({ message, onApprove, onReject }: ApprovalGateProps
           <p className="text-xs text-muted-foreground mt-2">
             {message.content.length} characters
           </p>
+
+          {isAIGenerated && message.dataUsed && (
+            <div className="mt-3">
+              <AIDataUsedPanel dataUsed={message.dataUsed} />
+            </div>
+          )}
         </div>
       </CardContent>
 

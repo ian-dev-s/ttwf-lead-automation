@@ -171,6 +171,7 @@ export async function POST(
       await emailDocRef.update({
         aiReplyContent: reply.content,
         aiReplySubject: reply.subject,
+        aiDataUsed: reply.dataUsed || null,
         status: 'pending',
         isProcessed: false,
         updatedAt: new Date(),
@@ -181,6 +182,7 @@ export async function POST(
         status: 'pending',
         aiReplyContent: reply.content,
         aiReplySubject: reply.subject,
+        dataUsed: reply.dataUsed,
       });
     }
 

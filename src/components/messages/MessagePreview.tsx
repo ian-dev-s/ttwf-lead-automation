@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/tooltip';
 import { formatDateTime } from '@/lib/utils';
 import { Lead, Message } from '@/types';
+import { AIDataUsedPanel } from './AIDataUsedPanel';
 import {
     Bot,
     Check,
@@ -239,6 +240,12 @@ export function MessagePreview({ message, onUpdate }: MessagePreviewProps) {
             {message.content}
           </pre>
         </div>
+
+        {isAIGenerated && message.dataUsed && (
+          <div className="mb-4">
+            <AIDataUsedPanel dataUsed={message.dataUsed} />
+          </div>
+        )}
 
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={handleCopy}>

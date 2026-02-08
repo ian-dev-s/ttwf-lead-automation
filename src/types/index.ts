@@ -97,6 +97,31 @@ export interface Lead {
   contactedAt: Date | null;
 }
 
+/** Metadata describing which data the AI used when generating content */
+export interface AIDataUsed {
+  leadData: {
+    businessName: string;
+    location: string;
+    industry?: string;
+    googleRating?: number;
+    reviewCount?: number;
+    hasWebsite: boolean;
+    hasFacebook: boolean;
+  };
+  templateName: string | null;
+  templatePurpose: string | null;
+  aiSettings: {
+    tone: string | null;
+    writingStyle: string | null;
+    customInstructions: string | null;
+  };
+  knowledgeItemsUsed: string[];
+  sampleResponsesCount: number;
+  model: string;
+  provider: string;
+  previousMessageUsed: boolean;
+}
+
 /** A Message document with its Firestore id */
 export interface Message {
   id: string;
@@ -110,6 +135,7 @@ export interface Message {
   generatedBy: string | null;
   aiProvider: string | null;
   aiModel: string | null;
+  dataUsed: AIDataUsed | null;
   createdAt: Date;
   updatedAt: Date;
 }

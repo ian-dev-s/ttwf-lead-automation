@@ -1,28 +1,23 @@
 import type { Lead } from '@/types';
 
-// System prompt for message personalization
-export const MESSAGE_SYSTEM_PROMPT = `You are an expert copywriter for The Tiny Web Factory, a web design agency that helps South African businesses establish their online presence.
+// System prompt for message personalization — follows the SPEAR framework
+export const MESSAGE_SYSTEM_PROMPT = `You write outreach emails for The Tiny Web Factory, a web design agency helping South African small businesses get online.
 
-Your task is to write personalized outreach messages to businesses that could benefit from having a professional website. The messages should:
+Follow the SPEAR framework strictly:
+- SHORT: Keep the email body under 100 words. No long paragraphs — 2-3 short paragraphs max.
+- PERSONAL: Mention the business by name. Reference something specific (their Google rating, reviews, industry, location). Never send anything that reads like a mass email.
+- EXPECTS A REPLY: Always end with a casual, low-pressure question that invites a response (e.g., "Would you be keen?" or "Mind if we put something together for you?").
 
-1. Be warm, professional, and genuine
-2. Reference specific details about their business (ratings, reviews, location)
-3. Highlight their strengths (great reviews, established reputation)
-4. Gently mention the opportunity (no website or low-quality website)
-5. Present the offer clearly (free draft website, no obligation)
-6. Include a clear call to action
-
-Key guidelines:
-- Never be pushy or salesy
-- Focus on how we can help them grow
-- Be respectful of their time
-- Use South African English spelling (e.g., "favour" not "favor")
+Tone guidelines:
+- Casual and friendly — like messaging someone you know, not writing a corporate letter
+- Never pushy, salesy, or overly formal
+- Use South African English spelling (e.g., "favour", "colour")
 - For EMAIL messages: Use HTML formatting (NOT markdown). Use <p>, <br>, <strong>, <em>, <a href="..."> tags.
 
-The Tiny Web Factory offers:
-- Professional landing page websites
-- Business email addresses
-- Free draft website for review before commitment`;
+What The Tiny Web Factory offers:
+- Free draft landing page (no obligation)
+- Professional business email addresses
+- Website: https://thetinywebfactory.com`;
 
 // Generate the user prompt for message generation
 export function generateMessagePrompt(lead: Lead): string {
@@ -38,34 +33,29 @@ IMPORTANT: Format the body using HTML tags (NOT markdown). Use:
 - <a href="https://...">link text</a> for links
 Do NOT use markdown syntax like **bold** or [link](url).`;
   
-  return `Write a personalized ${format} message to reach out to this business:
+  return `Write a short, personalized ${format} to this business using the SPEAR framework (Short, Personal, Expects A Reply):
 
 ${businessDetails}
 
 ${formatGuidance}
 
-Base the message on this template but personalize it:
+Use this as a loose guide for structure — but keep it shorter and more personal:
 
 ---
-Good day,
+Hey [Name],
 
-We came across your business and noticed that you have great reviews on Google and Facebook, but don't currently have a website.
+Saw your [specific detail] — really impressive! Noticed you don't have a website yet though.
 
-We wanted to reach out to see whether you might be interested in having a professional website to further showcase your business and attract more customers online.
+We'd love to put together a free draft landing page for you — zero obligation, just to show you what's possible.
 
-To make this easy, we'll create a draft landing page at no cost. You'll be able to review it, suggest changes, and ensure it suits your business needs perfectly. Once you're happy, we'll send you an invoice to take the website live.
+Keen to have a look?
 
-We also offer professional business email addresses to help strengthen your brand's credibility.
-
-If you would like us to contact you, please reply and let us know a convenient time.
-
-Feel free to view our work at:
-https://thetinywebfactory.com
-
+Cheers,
 The Tiny Web Factory Team
+https://thetinywebfactory.com
 ---
 
-Personalize this message based on their specific details. Format it as a professional HTML email with proper greeting and signature. Remember: Use HTML tags, NOT markdown.`;
+IMPORTANT: Keep the email body under 100 words. End with a casual question. Use their actual business details. Format as HTML (not markdown).`;
 }
 
 // Build business details string for the prompt
@@ -173,7 +163,7 @@ Do NOT use markdown syntax like **bold** or [link](url).`;
     ? `Previous subject: "${previousMessageSubject}"\n`
     : '';
   
-  return `Write a polite follow-up ${format} message to this business:
+  return `Write a short follow-up ${format} to this business using the SPEAR framework (Short, Personal, Expects A Reply):
 
 ${businessDetails}
 
@@ -184,31 +174,29 @@ ${previousMessageContent}
 
 ${formatGuidance}
 
-Guidelines for the follow-up:
-- Reference the previous outreach naturally without repeating it verbatim
-- Be shorter and more concise than the initial outreach
-- Maintain professionalism and warmth
-- Gently remind them of the offer without being pushy
-- Keep the tone consistent with the previous message
-- Format it as a professional HTML email with proper greeting and signature. Remember: Use HTML tags, NOT markdown.`;
+Follow-up guidelines:
+- Keep it VERY short — under 60 words for the body
+- Nod to the previous message casually (don't repeat it)
+- Acknowledge they're busy — no guilt-tripping
+- Remind them of the free draft offer in one line
+- End with a simple yes/no question (e.g., "Still interested?" or "Want us to go ahead?")
+- Casual, friendly tone — not corporate or desperate
+- Format as HTML (not markdown).`;
 }
 
 // ─── Inbound Reply Prompts ─────────────────────────────────
 
-export const REPLY_SYSTEM_PROMPT = `You are a professional email assistant. Your task is to compose helpful, professional replies to incoming emails on behalf of the business.
+export const REPLY_SYSTEM_PROMPT = `You reply to incoming emails on behalf of The Tiny Web Factory.
 
-Your replies should:
-1. Be warm, professional, and directly address the questions or topics raised
-2. Reference specific details from the incoming email
-3. Be helpful and provide clear, actionable information
-4. Include a clear next step or call to action
-5. Be appropriately concise - match the length and tone of the incoming message
+Follow the SPEAR framework:
+- SHORT: Keep replies concise — match or be shorter than the incoming message. No essays.
+- PERSONAL: Reference what they actually asked or said. Don't give generic answers.
+- EXPECTS A REPLY: End with a question or clear next step that keeps the conversation going.
 
-Key guidelines:
-- Always be helpful and courteous
-- Answer questions directly
-- If the email asks about services, explain what you offer
-- If the email asks about pricing, provide general guidance or offer to discuss
+Tone:
+- Friendly and conversational — not corporate or stiff
+- Helpful and direct — answer their question first, then offer more
+- Use South African English spelling
 - For EMAIL messages: Use HTML formatting (NOT markdown). Use <p>, <br>, <strong>, <em>, <a href="..."> tags.
 - Do NOT use markdown syntax like **bold** or [link](url).`;
 
@@ -239,7 +227,7 @@ export function generateReplyPrompt(params: {
     }
   }
 
-  return `Write a professional reply to this incoming email.
+  return `Write a short, friendly reply to this email using the SPEAR framework (Short, Personal, Expects A Reply):
 
 From: ${fromName} <${fromEmail}>
 Subject: ${subject}
@@ -258,7 +246,7 @@ IMPORTANT: Format the body using HTML tags (NOT markdown). Use:
 - <a href="https://...">link text</a> for links
 Do NOT use markdown syntax like **bold** or [link](url).
 
-Write a helpful, professional reply that addresses the sender's questions or concerns. Format it as a proper HTML email with greeting and signature.`;
+Keep it short — answer their question directly, then end with a question to keep the conversation going. Casual and friendly tone, not corporate.`;
 }
 
 // Type for template data (replaces EmailTemplate from Prisma)

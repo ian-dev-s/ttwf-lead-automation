@@ -6,6 +6,15 @@ import { ProcessManager } from '@/components/scraper/ProcessManager';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+    DialogTrigger,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
     Select,
@@ -17,7 +26,7 @@ import {
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { formatDateTime } from '@/lib/utils';
-import { Activity, AlertTriangle, CheckCircle, Clock, Loader2, Play, Save, Search, Settings, Sparkles, StopCircle, Trash2, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle, Clock, Loader2, Play, Plus, Save, Search, Settings, Sparkles, StopCircle, Trash2, X, XCircle } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 
@@ -40,24 +49,15 @@ interface CountryOption {
   cities: string[];
 }
 
-// Preset options for number of leads
-const LEAD_COUNT_OPTIONS = [1, 5, 10, 20, 50];
-
 export default function ScraperPage() {
   const [jobs, setJobs] = useState<ScrapingJob[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
-  const [cities, setCities] = useState<string[]>([]);
   const [countries, setCountries] = useState<CountryOption[]>([]);
   const [, setDefaultCountry] = useState<string>('ZA');
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Form state - default to 1 lead
-  const [leadsRequested, setLeadsRequested] = useState(1);
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
-  const [selectedCity, setSelectedCity] = useState<string>('all');
   const [selectedCountry, setSelectedCountry] = useState<string>('ZA');
-  const [minRating, setMinRating] = useState(4.0);
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
   const [stoppingJobId, setStoppingJobId] = useState<string | null>(null);
   const [viewingJobId, setViewingJobId] = useState<string | null>(null);
@@ -76,8 +76,13 @@ export default function ScraperPage() {
     minEmailLeadsPerRun: 5,
     searchRadiusKm: 50,
     minGoogleRating: 4.0,
+    targetIndustries: [] as string[],
+    targetCities: [] as string[],
   });
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [newIndustry, setNewIndustry] = useState('');
+  const [newCity, setNewCity] = useState('');
 
   // Track if we had running jobs recently (to continue polling after completion)
   const [hadRunningJobsRecently, setHadRunningJobsRecently] = useState(false);
@@ -137,8 +142,6 @@ export default function ScraperPage() {
 
       const data = await scraperRes.json();
       setJobs(data.jobs || []);
-      setCategories(data.availableCategories || []);
-      setCities(data.availableCities || []);
       setCountries(data.availableCountries || []);
       if (data.defaultCountry) {
         setDefaultCountry(data.defaultCountry);
@@ -167,6 +170,8 @@ export default function ScraperPage() {
           minEmailLeadsPerRun: settingsData.minEmailLeadsPerRun ?? 5,
           searchRadiusKm: settingsData.searchRadiusKm ?? 50,
           minGoogleRating: settingsData.minGoogleRating ?? 4.0,
+          targetIndustries: settingsData.targetIndustries ?? [],
+          targetCities: settingsData.targetCities ?? [],
         });
       }
     } catch (error) {
@@ -187,11 +192,48 @@ export default function ScraperPage() {
         body: JSON.stringify(scrapingSettings),
       });
       if (!response.ok) throw new Error('Failed to save scraping settings');
+      setSettingsDialogOpen(false);
     } catch (error) {
       console.error('Error saving scraping settings:', error);
     } finally {
       setIsSavingSettings(false);
     }
+  };
+
+  const handleAddIndustry = () => {
+    const trimmed = newIndustry.trim();
+    if (trimmed && !scrapingSettings.targetIndustries.includes(trimmed)) {
+      setScrapingSettings((prev) => ({
+        ...prev,
+        targetIndustries: [...prev.targetIndustries, trimmed],
+      }));
+    }
+    setNewIndustry('');
+  };
+
+  const handleRemoveIndustry = (industry: string) => {
+    setScrapingSettings((prev) => ({
+      ...prev,
+      targetIndustries: prev.targetIndustries.filter((i) => i !== industry),
+    }));
+  };
+
+  const handleAddCity = () => {
+    const trimmed = newCity.trim();
+    if (trimmed && !scrapingSettings.targetCities.includes(trimmed)) {
+      setScrapingSettings((prev) => ({
+        ...prev,
+        targetCities: [...prev.targetCities, trimmed],
+      }));
+    }
+    setNewCity('');
+  };
+
+  const handleRemoveCity = (city: string) => {
+    setScrapingSettings((prev) => ({
+      ...prev,
+      targetCities: prev.targetCities.filter((c) => c !== city),
+    }));
   };
 
   const handleStartScraping = async () => {
@@ -201,11 +243,11 @@ export default function ScraperPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          leadsRequested,
-          categories: selectedCategory === 'all' ? [] : [selectedCategory],
-          locations: selectedCity === 'all' ? [] : [selectedCity],
+          leadsRequested: scrapingSettings.dailyLeadTarget,
+          categories: scrapingSettings.targetIndustries,
+          locations: scrapingSettings.targetCities,
           country: selectedCountry,
-          minRating,
+          minRating: scrapingSettings.minGoogleRating,
           runImmediately: true,
         }),
       });
@@ -355,16 +397,57 @@ export default function ScraperPage() {
           </Card>
         )}
 
-        {/* New Scraping Job */}
+        {/* Find New Leads */}
         <Card>
           <CardHeader>
             <CardTitle>Find New Leads</CardTitle>
             <CardDescription>
-              Configure and start a new lead scraping job. The AI will search
-              Google Maps for businesses that match your criteria.
+              Search Google Maps for businesses matching your configured criteria. Each lead is enriched from multiple sources.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-6">
+          <CardContent className="space-y-4">
+            {/* Current search summary */}
+            <div className="bg-muted/50 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <Search className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <h4 className="font-medium text-sm mb-2">Current search configuration</h4>
+                  <div className="flex flex-wrap gap-1.5 items-center">
+                    <span className="text-sm text-muted-foreground">Finding</span>
+                    <Badge variant="secondary">{scrapingSettings.dailyLeadTarget} {scrapingSettings.dailyLeadTarget === 1 ? 'lead' : 'leads'}</Badge>
+                    <span className="text-sm text-muted-foreground">in</span>
+                    {scrapingSettings.targetIndustries.length > 0 ? (
+                      scrapingSettings.targetIndustries.slice(0, 5).map((industry) => (
+                        <Badge key={industry} variant="secondary" className="text-xs">
+                          {industry}
+                        </Badge>
+                      ))
+                    ) : (
+                      <Badge variant="outline" className="text-xs">All industries</Badge>
+                    )}
+                    {scrapingSettings.targetIndustries.length > 5 && (
+                      <span className="text-xs text-muted-foreground">+{scrapingSettings.targetIndustries.length - 5} more</span>
+                    )}
+                    <span className="text-sm text-muted-foreground">from</span>
+                    {scrapingSettings.targetCities.length > 0 ? (
+                      scrapingSettings.targetCities.slice(0, 3).map((city) => (
+                        <Badge key={city} variant="outline" className="text-xs">
+                          {city}
+                        </Badge>
+                      ))
+                    ) : (
+                      <Badge variant="outline" className="text-xs">All cities</Badge>
+                    )}
+                    {scrapingSettings.targetCities.length > 3 && (
+                      <span className="text-xs text-muted-foreground">+{scrapingSettings.targetCities.length - 3} more</span>
+                    )}
+                    <span className="text-sm text-muted-foreground">•</span>
+                    <span className="text-xs text-muted-foreground">{scrapingSettings.minGoogleRating}+ rating</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* Enrichment info banner */}
             <div className="bg-gradient-to-r from-purple-500/10 to-blue-500/10 border border-purple-500/20 rounded-lg p-4">
               <div className="flex items-start gap-3">
@@ -379,116 +462,11 @@ export default function ScraperPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-              <div className="space-y-2">
-                <Label>Number of Leads</Label>
-                <Select 
-                  value={leadsRequested.toString()} 
-                  onValueChange={(v) => setLeadsRequested(parseInt(v))}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {LEAD_COUNT_OPTIONS.map((count) => (
-                      <SelectItem key={count} value={count.toString()}>
-                        {count} {count === 1 ? 'lead' : 'leads'}
-                        {count === 1 && ' (recommended)'}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  {leadsRequested === 1 
-                    ? 'Full enrichment for one business' 
-                    : `Enrich ${leadsRequested} businesses sequentially`}
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Country</Label>
-                <Select 
-                  value={selectedCountry} 
-                  onValueChange={(value) => {
-                    setSelectedCountry(value);
-                    // Reset city selection when country changes
-                    setSelectedCity('all');
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {countries.map((country) => (
-                      <SelectItem key={country.code} value={country.code}>
-                        {country.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  Restricts search to this country
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Industry Category</Label>
-                <Select value={selectedCategory} onValueChange={setSelectedCategory}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Categories</SelectItem>
-                    {categories.map((cat) => (
-                      <SelectItem key={cat} value={cat}>
-                        {cat}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>City/Location</Label>
-                <Select value={selectedCity} onValueChange={setSelectedCity}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Cities</SelectItem>
-                    {/* Show cities for selected country */}
-                    {(countries.find(c => c.code === selectedCountry)?.cities || cities).map((city) => (
-                      <SelectItem key={city} value={city}>
-                        {city}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Min Google Rating</Label>
-                <div className="flex items-center gap-4">
-                  <Slider
-                    value={[minRating]}
-                    onValueChange={(v) => setMinRating(v[0])}
-                    min={3}
-                    max={5}
-                    step={0.5}
-                    className="flex-1"
-                  />
-                  <span className="w-12 text-center font-medium">
-                    {minRating}+
-                  </span>
-                </div>
-              </div>
-            </div>
-
+            {/* Action buttons */}
             <div className="flex items-center gap-3">
               <Button
                 onClick={handleStartScraping}
                 disabled={isSubmitting || !aiReady}
-                className="w-full md:w-auto"
               >
                 {isSubmitting ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -497,6 +475,284 @@ export default function ScraperPage() {
                 )}
                 Start Scraping
               </Button>
+
+              <Dialog open={settingsDialogOpen} onOpenChange={setSettingsDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="outline">
+                    <Settings className="h-4 w-4 mr-2" />
+                    Configure
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+                  <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                      <Settings className="h-5 w-5" />
+                      Scraping Configuration
+                    </DialogTitle>
+                    <DialogDescription>
+                      Configure what leads to search for and automation settings
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  <div className="space-y-6 pt-4">
+                    {/* Country Selection */}
+                    <div className="space-y-2">
+                      <Label>Country</Label>
+                      <Select 
+                        value={selectedCountry} 
+                        onValueChange={setSelectedCountry}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {countries.map((country) => (
+                            <SelectItem key={country.code} value={country.code}>
+                              {country.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        Restricts search to this country
+                      </p>
+                    </div>
+
+                    <hr />
+
+                    {/* Target Industries */}
+                    <div className="space-y-3">
+                      <Label className="text-sm font-medium">Target Industries</Label>
+                      <p className="text-xs text-muted-foreground">
+                        The types of businesses the scraper will search for on Google Maps
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {scrapingSettings.targetIndustries.map((industry) => (
+                          <Badge
+                            key={industry}
+                            variant="secondary"
+                            className="pl-2.5 pr-1 py-1 flex items-center gap-1"
+                          >
+                            {industry}
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveIndustry(industry)}
+                              className="ml-1 rounded-full p-0.5 hover:bg-muted-foreground/20 transition-colors"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </Badge>
+                        ))}
+                        {scrapingSettings.targetIndustries.length === 0 && (
+                          <span className="text-sm text-muted-foreground italic">No industries configured - will search all</span>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="Add industry (e.g. Plumber, Dentist)"
+                          value={newIndustry}
+                          onChange={(e) => setNewIndustry(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddIndustry();
+                            }
+                          }}
+                          className="flex-1"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          onClick={handleAddIndustry}
+                          disabled={!newIndustry.trim()}
+                        >
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Target Cities */}
+                    <div className="space-y-3">
+                      <Label className="text-sm font-medium">Target Cities</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Locations the scraper will focus on when searching for leads
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {scrapingSettings.targetCities.map((city) => (
+                          <Badge
+                            key={city}
+                            variant="outline"
+                            className="pl-2.5 pr-1 py-1 flex items-center gap-1"
+                          >
+                            {city}
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveCity(city)}
+                              className="ml-1 rounded-full p-0.5 hover:bg-muted-foreground/20 transition-colors"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </Badge>
+                        ))}
+                        {scrapingSettings.targetCities.length === 0 && (
+                          <span className="text-sm text-muted-foreground italic">No cities configured - will search all</span>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="Add city (e.g. Johannesburg, Cape Town)"
+                          value={newCity}
+                          onChange={(e) => setNewCity(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddCity();
+                            }
+                          }}
+                          className="flex-1"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          onClick={handleAddCity}
+                          disabled={!newCity.trim()}
+                        >
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    <hr />
+
+                    {/* Automation Settings */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <Label>Enable Automatic Lead Generation</Label>
+                        <p className="text-sm text-muted-foreground">
+                          Automatically find and add new leads daily
+                        </p>
+                      </div>
+                      <Switch
+                        checked={scrapingSettings.leadGenerationEnabled}
+                        onCheckedChange={(checked) =>
+                          setScrapingSettings((prev) => ({ ...prev, leadGenerationEnabled: checked }))
+                        }
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <Label>Daily Lead Target</Label>
+                        <div className="flex items-center gap-4">
+                          <Slider
+                            value={[scrapingSettings.dailyLeadTarget]}
+                            onValueChange={(v) =>
+                              setScrapingSettings((prev) => ({ ...prev, dailyLeadTarget: v[0] }))
+                            }
+                            min={5}
+                            max={50}
+                            step={5}
+                            className="flex-1"
+                          />
+                          <span className="w-12 text-center font-medium">
+                            {scrapingSettings.dailyLeadTarget}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Min Google Rating</Label>
+                        <div className="flex items-center gap-4">
+                          <Slider
+                            value={[scrapingSettings.minGoogleRating]}
+                            onValueChange={(v) =>
+                              setScrapingSettings((prev) => ({ ...prev, minGoogleRating: v[0] }))
+                            }
+                            min={3}
+                            max={5}
+                            step={0.5}
+                            className="flex-1"
+                          />
+                          <span className="w-12 text-center font-medium">
+                            {scrapingSettings.minGoogleRating}+
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Search Radius (km)</Label>
+                        <div className="flex items-center gap-4">
+                          <Slider
+                            value={[scrapingSettings.searchRadiusKm]}
+                            onValueChange={(v) =>
+                              setScrapingSettings((prev) => ({ ...prev, searchRadiusKm: v[0] }))
+                            }
+                            min={10}
+                            max={100}
+                            step={10}
+                            className="flex-1"
+                          />
+                          <span className="w-12 text-center font-medium">
+                            {scrapingSettings.searchRadiusKm}km
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Delay Between Requests (ms)</Label>
+                        <div className="flex items-center gap-4">
+                          <Slider
+                            value={[scrapingSettings.scrapeDelayMs]}
+                            onValueChange={(v) =>
+                              setScrapingSettings((prev) => ({ ...prev, scrapeDelayMs: v[0] }))
+                            }
+                            min={1000}
+                            max={5000}
+                            step={500}
+                            className="flex-1"
+                          />
+                          <span className="w-16 text-center font-medium">
+                            {scrapingSettings.scrapeDelayMs}ms
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Min Email Leads Per Run</Label>
+                        <div className="flex items-center gap-4">
+                          <Slider
+                            value={[scrapingSettings.minEmailLeadsPerRun]}
+                            onValueChange={(v) =>
+                              setScrapingSettings((prev) => ({ ...prev, minEmailLeadsPerRun: v[0] }))
+                            }
+                            min={0}
+                            max={20}
+                            step={1}
+                            className="flex-1"
+                          />
+                          <span className="w-12 text-center font-medium">
+                            {scrapingSettings.minEmailLeadsPerRun}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Keep searching until at least this many leads with email are found. Set to 0 to disable.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end pt-2">
+                      <Button onClick={handleSaveScrapingSettings} disabled={isSavingSettings}>
+                        {isSavingSettings && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                        <Save className="h-4 w-4 mr-2" />
+                        Save Settings
+                      </Button>
+                    </div>
+                  </div>
+                </DialogContent>
+              </Dialog>
+
               {!aiReady && hasApiKey !== null && (
                 <span className="text-xs text-amber-600 dark:text-amber-400">
                   AI provider must be configured first
@@ -647,140 +903,6 @@ export default function ScraperPage() {
         {/* Process Manager */}
         <ProcessManager hasActiveJob={jobs.some(job => job.status === 'RUNNING')} />
 
-        {/* Scraping Configuration */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Settings className="h-5 w-5" />
-              Scraping Configuration
-            </CardTitle>
-            <CardDescription>
-              Configure automated lead generation and scraping behaviour
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <Label>Enable Automatic Lead Generation</Label>
-                <p className="text-sm text-muted-foreground">
-                  Automatically find and add new leads daily
-                </p>
-              </div>
-              <Switch
-                checked={scrapingSettings.leadGenerationEnabled}
-                onCheckedChange={(checked) =>
-                  setScrapingSettings((prev) => ({ ...prev, leadGenerationEnabled: checked }))
-                }
-              />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="space-y-2">
-                <Label>Daily Lead Target</Label>
-                <div className="flex items-center gap-4">
-                  <Slider
-                    value={[scrapingSettings.dailyLeadTarget]}
-                    onValueChange={(v) =>
-                      setScrapingSettings((prev) => ({ ...prev, dailyLeadTarget: v[0] }))
-                    }
-                    min={5}
-                    max={50}
-                    step={5}
-                    className="flex-1"
-                  />
-                  <span className="w-12 text-center font-medium">
-                    {scrapingSettings.dailyLeadTarget}
-                  </span>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Min Google Rating</Label>
-                <div className="flex items-center gap-4">
-                  <Slider
-                    value={[scrapingSettings.minGoogleRating]}
-                    onValueChange={(v) =>
-                      setScrapingSettings((prev) => ({ ...prev, minGoogleRating: v[0] }))
-                    }
-                    min={3}
-                    max={5}
-                    step={0.5}
-                    className="flex-1"
-                  />
-                  <span className="w-12 text-center font-medium">
-                    {scrapingSettings.minGoogleRating}+
-                  </span>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Search Radius (km)</Label>
-                <div className="flex items-center gap-4">
-                  <Slider
-                    value={[scrapingSettings.searchRadiusKm]}
-                    onValueChange={(v) =>
-                      setScrapingSettings((prev) => ({ ...prev, searchRadiusKm: v[0] }))
-                    }
-                    min={10}
-                    max={100}
-                    step={10}
-                    className="flex-1"
-                  />
-                  <span className="w-12 text-center font-medium">
-                    {scrapingSettings.searchRadiusKm}km
-                  </span>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Delay Between Requests (ms)</Label>
-                <div className="flex items-center gap-4">
-                  <Slider
-                    value={[scrapingSettings.scrapeDelayMs]}
-                    onValueChange={(v) =>
-                      setScrapingSettings((prev) => ({ ...prev, scrapeDelayMs: v[0] }))
-                    }
-                    min={1000}
-                    max={5000}
-                    step={500}
-                    className="flex-1"
-                  />
-                  <span className="w-16 text-center font-medium">
-                    {scrapingSettings.scrapeDelayMs}ms
-                  </span>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Min Email Leads Per Run</Label>
-                <div className="flex items-center gap-4">
-                  <Slider
-                    value={[scrapingSettings.minEmailLeadsPerRun]}
-                    onValueChange={(v) =>
-                      setScrapingSettings((prev) => ({ ...prev, minEmailLeadsPerRun: v[0] }))
-                    }
-                    min={0}
-                    max={20}
-                    step={1}
-                    className="flex-1"
-                  />
-                  <span className="w-12 text-center font-medium">
-                    {scrapingSettings.minEmailLeadsPerRun}
-                  </span>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Keep searching until at least this many leads with email are found. Set to 0 to disable.
-                </p>
-              </div>
-            </div>
-
-            <Button onClick={handleSaveScrapingSettings} disabled={isSavingSettings}>
-              {isSavingSettings && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              <Save className="h-4 w-4 mr-2" />
-              Save Scraping Settings
-            </Button>
-          </CardContent>
-        </Card>
       </div>
 
       {/* Job Log Viewer Modal */}

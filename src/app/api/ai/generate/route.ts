@@ -50,6 +50,7 @@ export async function POST(request: NextRequest) {
     let provider: string = 'template';
     let model: string = 'none';
     let generatedBy: 'ai' | 'template' = 'template';
+    let dataUsed: any = null;
 
     console.log(`📝 [Message Generation] Lead: ${lead.businessName} | Type: EMAIL | UseAI: ${useAI}`);
 
@@ -64,6 +65,7 @@ export async function POST(request: NextRequest) {
         subject = result.subject;
         provider = result.provider;
         model = result.model;
+        dataUsed = result.dataUsed;
         generatedBy = 'ai';
         console.log(`✅ [AI] Successfully generated with ${provider}/${model}`);
       } catch (aiError) {
@@ -91,6 +93,7 @@ export async function POST(request: NextRequest) {
         generatedBy,
         aiProvider: generatedBy === 'ai' ? provider : null,
         aiModel: generatedBy === 'ai' ? model : null,
+        dataUsed: dataUsed ?? null,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -122,6 +125,7 @@ export async function POST(request: NextRequest) {
       provider,
       model,
       generatedBy,
+      dataUsed,
       message,
     });
   } catch (error) {

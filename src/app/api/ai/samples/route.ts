@@ -9,26 +9,26 @@ const createSampleSchema = z.object({
   category: z.string().optional().nullable(),
 });
 
-// Default sample responses for The Tiny Web Factory
+// Default sample responses for The Tiny Web Factory — SPEAR style (Short, Personal, Expects A Reply)
 const DEFAULT_SAMPLE_RESPONSES = [
   {
     customerQuestion: 'How much does a website cost?',
-    preferredResponse: 'Great question! We start by creating a free draft landing page for you — completely no obligation. You can review it, suggest changes, and only once you are 100% happy do we send an invoice. Our landing pages are very affordable and tailored to small businesses. Would you like us to put a draft together for you?',
+    preferredResponse: 'Honestly, it depends on what you need — but we start by making you a free draft landing page. Zero obligation. If you love it, we chat pricing. Want us to put one together for you?',
     category: 'Pricing',
   },
   {
     customerQuestion: 'How long does it take to build a website?',
-    preferredResponse: 'We typically have a draft landing page ready within 2-3 business days. Once you review it and we make any changes you would like, we can have it live within a day. The whole process is quick and painless!',
+    preferredResponse: 'Pretty quick actually — we usually have a draft ready in 2-3 days. After your feedback, it can be live the next day. Want us to get started on yours?',
     category: 'Process',
   },
   {
     customerQuestion: 'I already have a Facebook page, do I really need a website?',
-    preferredResponse: 'A Facebook page is a great start, but a professional website gives you much more visibility. Your website appears in Google searches, works 24/7 as your digital shopfront, and gives you full control over your brand. Many customers look for a website before making contact — it builds trust and credibility. The best part? We will create a free draft so you can see the difference for yourself.',
+    preferredResponse: 'Facebook is great, but a website shows up on Google and gives you full control over your brand. Customers trust businesses with a proper site. We\'ll make you a free draft so you can see the difference — keen to have a look?',
     category: 'Value Proposition',
   },
   {
     customerQuestion: 'Do you offer ongoing support and maintenance?',
-    preferredResponse: 'Absolutely! We offer ongoing support to ensure your website stays up to date and running smoothly. We can also help with updates, adding new content, and keeping everything secure. You will never be left without help.',
+    preferredResponse: 'For sure! We help with updates, new content, security — all of it. You won\'t be left on your own. Anything specific you\'d need help with?',
     category: 'Support',
   },
 ];
