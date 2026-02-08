@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { leadDoc, messagesCollection, statusHistoryCollection, stripUndefined } from '@/lib/firebase/collections';
+import { leadDoc, messagesCollection, statusHistoryCollection, stripUndefined, serializeDoc } from '@/lib/firebase/collections';
 import { events } from '@/lib/events';
 import { calculateLeadScore } from '@/lib/utils';
 import { LeadStatus } from '@/types';
@@ -52,21 +52,21 @@ export async function GET(
       .where('leadId', '==', id)
       .orderBy('createdAt', 'desc')
       .get();
-    const messages = msgSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const messages = msgSnapshot.docs.map((d) => serializeDoc({ id: d.id, ...d.data() }));
 
     // Get status history
     const histSnapshot = await statusHistoryCollection(teamId)
       .where('leadId', '==', id)
       .orderBy('changedAt', 'desc')
       .get();
-    const statusHistory = histSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const statusHistory = histSnapshot.docs.map((d) => serializeDoc({ id: d.id, ...d.data() }));
 
-    return NextResponse.json({
+    return NextResponse.json(serializeDoc({
       id,
       ...leadData,
       messages,
       statusHistory,
-    });
+    }));
   } catch (error) {
     console.error('Error fetching lead:', error);
     return NextResponse.json(
@@ -204,9 +204,9 @@ export async function PATCH(
     const msgSnap2 = await messagesCollection(teamId)
       .where('leadId', '==', id)
       .get();
-    const messages = msgSnap2.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const messages = msgSnap2.docs.map((d) => serializeDoc({ id: d.id, ...d.data() }));
 
-    const lead = { id, ...updatedData, messages };
+    const lead = serializeDoc({ id, ...updatedData, messages });
 
     // Publish events + external notifications
     if (validatedData.status && validatedData.status !== currentLead.status) {

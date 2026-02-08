@@ -2,7 +2,7 @@ import { Header } from '@/components/layout/Header';
 import { LeadDetail } from '@/components/leads/LeadDetail';
 import { Button } from '@/components/ui/button';
 import { auth } from '@/lib/auth';
-import { leadDoc, messagesCollection, statusHistoryCollection, userDoc } from '@/lib/firebase/collections';
+import { leadDoc, messagesCollection, statusHistoryCollection, userDoc, serializeDoc } from '@/lib/firebase/collections';
 import { ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
@@ -20,7 +20,7 @@ async function getLead(teamId: string, id: string) {
     .where('leadId', '==', id)
     .orderBy('createdAt', 'desc')
     .get();
-  const messages = msgSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const messages = msgSnap.docs.map((d) => serializeDoc({ id: d.id, ...d.data() }));
 
   // Get status history with user info
   const histSnap = await statusHistoryCollection(teamId)
@@ -38,7 +38,7 @@ async function getLead(teamId: string, id: string) {
           changedBy = { name: userData.name, email: userData.email };
         }
       }
-      return { id: d.id, ...hist, changedBy };
+      return serializeDoc({ id: d.id, ...hist, changedBy });
     })
   );
 
@@ -52,13 +52,13 @@ async function getLead(teamId: string, id: string) {
     }
   }
 
-  return {
+  return serializeDoc({
     id,
     ...leadData,
     messages,
     statusHistory,
     createdBy,
-  };
+  });
 }
 
 export default async function LeadDetailPage({

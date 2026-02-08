@@ -50,6 +50,41 @@ export function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
 }
 
 /**
+ * Serialize Firestore document data to plain JSON-safe objects.
+ * Converts Timestamps to ISO strings so data can be passed to Client Components
+ * or returned from API routes without serialization errors.
+ */
+export function serializeDoc<T = Record<string, unknown>>(data: Record<string, unknown>): T {
+  const serialized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value === null || value === undefined) {
+      serialized[key] = value;
+    } else if (
+      typeof value === 'object' &&
+      value !== null &&
+      'toDate' in value &&
+      typeof (value as { toDate: () => Date }).toDate === 'function'
+    ) {
+      // Firestore Timestamp -> ISO string
+      serialized[key] = toDate(value).toISOString();
+    } else if (value instanceof Date) {
+      serialized[key] = value.toISOString();
+    } else if (Array.isArray(value)) {
+      serialized[key] = value.map((item) =>
+        typeof item === 'object' && item !== null
+          ? serializeDoc(item as Record<string, unknown>)
+          : item
+      );
+    } else if (typeof value === 'object') {
+      serialized[key] = serializeDoc(value as Record<string, unknown>);
+    } else {
+      serialized[key] = value;
+    }
+  }
+  return serialized as T;
+}
+
+/**
  * Generate a server timestamp for Firestore.
  */
 export function serverTimestamp() {

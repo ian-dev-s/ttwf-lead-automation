@@ -4,11 +4,9 @@ import { Header } from '@/components/layout/Header';
 import { LeadForm } from '@/components/leads/LeadForm';
 import { Button } from '@/components/ui/button';
 import { auth } from '@/lib/auth';
-import { leadsCollection, messagesCollection } from '@/lib/firebase/collections';
+import { leadsCollection, messagesCollection, serializeDoc } from '@/lib/firebase/collections';
 import { Sparkles } from 'lucide-react';
 import Link from 'next/link';
-
-export const dynamic = 'force-dynamic';
 
 async function getLeads(teamId: string) {
   const snapshot = await leadsCollection(teamId)
@@ -28,9 +26,13 @@ async function getLeads(teamId: string) {
         type: m.data().type,
         status: m.data().status,
       }));
+      
+      // Serialize to plain objects (converts Timestamps to ISO strings)
+      const serializedData = serializeDoc(data);
+      
       return {
         id: doc.id,
-        ...data,
+        ...serializedData,
         messages,
         _count: { messages: messages.length },
       };

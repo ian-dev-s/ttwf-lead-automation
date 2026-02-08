@@ -1,7 +1,7 @@
 import { DashboardStats } from '@/components/dashboard/DashboardStats';
 import { Header } from '@/components/layout/Header';
 import { auth } from '@/lib/auth';
-import { leadsCollection, messagesCollection } from '@/lib/firebase/collections';
+import { leadsCollection, messagesCollection, toDate } from '@/lib/firebase/collections';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,7 +25,7 @@ async function getStats(teamId: string) {
   const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   let weeklyLeads = 0;
 
-  const recentLeads: any[] = [];
+  const recentLeads: { id: string; businessName: string; status: string; location: string; createdAt: string }[] = [];
 
   allLeadsSnap.forEach((doc) => {
     const data = doc.data();
@@ -47,7 +47,7 @@ async function getStats(teamId: string) {
       businessName: data.businessName,
       status: data.status,
       location: data.location,
-      createdAt: data.createdAt,
+      createdAt: toDate(data.createdAt).toISOString(),
     });
   });
 

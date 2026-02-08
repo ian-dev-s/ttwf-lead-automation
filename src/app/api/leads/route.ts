@@ -1,39 +1,10 @@
 import { auth } from '@/lib/auth';
-import { leadsCollection, messagesCollection, stripUndefined, toDate } from '@/lib/firebase/collections';
+import { leadsCollection, messagesCollection, stripUndefined, serializeDoc } from '@/lib/firebase/collections';
 import { events } from '@/lib/events';
 import { calculateLeadScore } from '@/lib/utils';
 import type { LeadStatus } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-
-/**
- * Serialize Firestore data to plain JSON-safe objects.
- * Converts Timestamps to ISO strings.
- */
-function serializeForJson(data: Record<string, unknown>): Record<string, unknown> {
-  const serialized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(data)) {
-    if (value === null || value === undefined) {
-      serialized[key] = value;
-    } else if (
-      typeof value === 'object' &&
-      value !== null &&
-      'toDate' in value &&
-      typeof (value as { toDate: () => Date }).toDate === 'function'
-    ) {
-      // Firestore Timestamp -> ISO string
-      serialized[key] = toDate(value).toISOString();
-    } else if (value instanceof Date) {
-      serialized[key] = value.toISOString();
-    } else if (typeof value === 'object' && !Array.isArray(value)) {
-      // Recursively serialize nested objects
-      serialized[key] = serializeForJson(value as Record<string, unknown>);
-    } else {
-      serialized[key] = value;
-    }
-  }
-  return serialized;
-}
 
 // Validation schema for creating a lead
 const createLeadSchema = z.object({
@@ -124,14 +95,12 @@ export async function GET(request: NextRequest) {
         }));
 
         // Serialize to plain JSON (converts Timestamps to ISO strings)
-        const serializedData = serializeForJson(data);
-
-        return {
+        return serializeDoc({
           id: doc.id,
-          ...serializedData,
+          ...data,
           messages,
           _count: { messages: messages.length },
-        };
+        });
       })
     );
 
@@ -218,8 +187,7 @@ export async function POST(request: NextRequest) {
     await docRef.set(leadData);
 
     // Serialize to plain JSON for response
-    const serializedLead = serializeForJson(leadData);
-    const lead = { id: docRef.id, ...serializedLead };
+    const lead = serializeDoc({ id: docRef.id, ...leadData });
 
     // Publish real-time event + external notifications
     await events.leadCreated({
