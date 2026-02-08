@@ -17,20 +17,21 @@ import {
     ChevronDown,
     FileText,
     History,
+    Inbox,
     LayoutDashboard,
     LogOut,
-    Mail,
     Search,
     Settings,
     Users,
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Leads', href: '/leads', icon: Users },
-  { name: 'Email', href: '/messages', icon: Mail },
+  { name: 'Inbox', href: '/messages', icon: Inbox, badgeKey: 'inboxPending' as const },
   { name: 'Templates', href: '/templates', icon: FileText },
   { name: 'AI Training', href: '/training', icon: Brain },
   { name: 'Contacts', href: '/contacts', icon: BookUser },
@@ -43,6 +44,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { user, signOut } = useSession();
+  const [pendingCount, setPendingCount] = useState(0);
 
   const userInitials = user?.name
     ? user.name
@@ -56,6 +58,27 @@ export function Sidebar() {
     await signOut();
     router.push('/login');
   };
+
+  // Fetch pending inbox count
+  useEffect(() => {
+    let mounted = true;
+    const fetchPendingCount = async () => {
+      try {
+        const res = await fetch('/api/email/inbox?filter=pending&limit=1');
+        if (res.ok) {
+          const data = await res.json();
+          if (mounted) setPendingCount(data.counts?.pending || 0);
+        }
+      } catch {
+        // Ignore errors silently
+      }
+    };
+
+    fetchPendingCount();
+    // Refresh every 60 seconds
+    const interval = setInterval(fetchPendingCount, 60000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, []);
 
   return (
     <div className="flex flex-col h-full w-64 bg-card border-r">
@@ -78,6 +101,7 @@ export function Sidebar() {
           const isActive =
             pathname === item.href ||
             (item.href !== '/' && pathname.startsWith(item.href));
+          const badgeCount = item.badgeKey === 'inboxPending' ? pendingCount : 0;
           return (
             <Link
               key={item.name}
@@ -91,6 +115,16 @@ export function Sidebar() {
             >
               <item.icon className="h-5 w-5" />
               {item.name}
+              {badgeCount > 0 && (
+                <span className={cn(
+                  'ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-xs font-semibold',
+                  isActive
+                    ? 'bg-primary-foreground/20 text-primary-foreground'
+                    : 'bg-destructive text-destructive-foreground'
+                )}>
+                  {badgeCount}
+                </span>
+              )}
             </Link>
           );
         })}

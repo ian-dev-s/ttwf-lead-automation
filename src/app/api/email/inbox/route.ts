@@ -16,41 +16,57 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get('page') || '1', 10);
-    const limit = parseInt(searchParams.get('limit') || '20', 10);
-    const filter = searchParams.get('filter'); // 'read', 'unread', 'matched', 'unmatched'
+    const limit = parseInt(searchParams.get('limit') || '50', 10);
+    const filter = searchParams.get('filter'); // 'pending', 'approved', 'rejected', 'read', 'unread', 'matched', 'unmatched'
 
-    // Build query - apply where first, then orderBy
-    let query: FirebaseFirestore.Query<any> = inboundEmailsCollection(teamId);
+    // Fetch all emails once for counts (ordered by receivedAt desc)
+    const allSnapshot = await inboundEmailsCollection(teamId)
+      .orderBy('receivedAt', 'desc')
+      .get();
 
-    if (filter === 'read') {
-      query = query.where('isRead', '==', true);
-    } else if (filter === 'unread') {
-      query = query.where('isRead', '==', false);
-    } else if (filter === 'matched') {
-      query = query.where('leadId', '!=', null);
-    } else if (filter === 'unmatched') {
-      query = query.where('leadId', '==', null);
-    }
-
-    query = query.orderBy('receivedAt', 'desc');
-
-    const snapshot = await query.get();
-    const allEmails = snapshot.docs.map(doc => ({
+    const allEmailsRaw = allSnapshot.docs.map(doc => ({
       id: doc.id,
       ...doc.data(),
     }));
 
-    // Apply pagination manually (Firestore doesn't support offset efficiently)
+    // Compute status counts
+    const counts = { all: allEmailsRaw.length, pending: 0, approved: 0, rejected: 0 };
+    for (const e of allEmailsRaw) {
+      const status = (e as any).status || 'pending';
+      if (status === 'pending') counts.pending++;
+      else if (status === 'approved') counts.approved++;
+      else if (status === 'rejected') counts.rejected++;
+    }
+
+    // Apply filter
+    let filteredEmails = allEmailsRaw;
+    if (filter === 'pending') {
+      filteredEmails = allEmailsRaw.filter((e: any) => (e.status || 'pending') === 'pending');
+    } else if (filter === 'approved') {
+      filteredEmails = allEmailsRaw.filter((e: any) => e.status === 'approved');
+    } else if (filter === 'rejected') {
+      filteredEmails = allEmailsRaw.filter((e: any) => e.status === 'rejected');
+    } else if (filter === 'read') {
+      filteredEmails = allEmailsRaw.filter((e: any) => e.isRead === true);
+    } else if (filter === 'unread') {
+      filteredEmails = allEmailsRaw.filter((e: any) => e.isRead === false);
+    } else if (filter === 'matched') {
+      filteredEmails = allEmailsRaw.filter((e: any) => e.leadId != null);
+    } else if (filter === 'unmatched') {
+      filteredEmails = allEmailsRaw.filter((e: any) => e.leadId == null);
+    }
+
+    // Apply pagination
     const startIndex = (page - 1) * limit;
     const endIndex = startIndex + limit;
-    const emails = allEmails.slice(startIndex, endIndex);
+    const emails = filteredEmails.slice(startIndex, endIndex);
 
     // Fetch lead relations for emails that have leadId
     const emailsWithLeads = await Promise.all(
       emails.map(async (email) => {
-        if (email.leadId) {
+        if ((email as any).leadId) {
           try {
-            const leadDocRef = await leadDoc(teamId, email.leadId).get();
+            const leadDocRef = await leadDoc(teamId, (email as any).leadId).get();
             if (leadDocRef.exists) {
               const leadData = leadDocRef.data()!;
               return {
@@ -63,7 +79,7 @@ export async function GET(request: NextRequest) {
               };
             }
           } catch (error) {
-            console.error(`Error fetching lead ${email.leadId}:`, error);
+            console.error(`Error fetching lead ${(email as any).leadId}:`, error);
           }
         }
         return email;
@@ -72,11 +88,12 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       emails: emailsWithLeads,
+      counts,
       pagination: {
         page,
         limit,
-        total: allEmails.length,
-        totalPages: Math.ceil(allEmails.length / limit),
+        total: filteredEmails.length,
+        totalPages: Math.ceil(filteredEmails.length / limit),
       },
     });
   } catch (error) {

@@ -161,8 +161,18 @@ export function JobLogViewer({ jobId, isOpen, onClose }: JobLogViewerProps) {
     }
   };
 
-  const formatTime = (timestamp: string) => {
-    const date = new Date(timestamp);
+  const formatTime = (timestamp: unknown) => {
+    // Handle Firestore Timestamp objects (serialized as { seconds, nanoseconds })
+    let date: Date;
+    if (typeof timestamp === 'object' && timestamp !== null && 'seconds' in timestamp) {
+      const ts = timestamp as { seconds: number; nanoseconds?: number };
+      date = new Date(ts.seconds * 1000 + (ts.nanoseconds || 0) / 1000000);
+    } else {
+      date = new Date(timestamp as string | number);
+    }
+    
+    if (isNaN(date.getTime())) return '';
+    
     return date.toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit',

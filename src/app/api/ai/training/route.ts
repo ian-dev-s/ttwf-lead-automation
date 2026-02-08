@@ -1,7 +1,12 @@
 import { auth } from '@/lib/auth';
-import { teamSettingsDoc, serverTimestamp, stripUndefined } from '@/lib/firebase/collections';
+import { serverTimestamp, stripUndefined, teamSettingsDoc } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+
+// Default AI training values for The Tiny Web Factory
+const DEFAULT_AI_TONE = 'professional-friendly';
+const DEFAULT_AI_WRITING_STYLE = 'persuasive';
+const DEFAULT_AI_CUSTOM_INSTRUCTIONS = 'Use South African English spelling (e.g., "favour" not "favor", "colour" not "color"). Always mention our free draft website offer. Focus on how a professional website can help grow their business. Be warm and genuine - never pushy or salesy. Reference The Tiny Web Factory as the company name and include our website link: https://thetinywebfactory.com';
 
 const updateTrainingSchema = z.object({
   aiTone: z.string().nullable().optional(),
@@ -23,18 +28,19 @@ export async function GET(_request: NextRequest) {
     const docSnap = await docRef.get();
 
     if (!docSnap.exists) {
+      // Return seeded defaults for new teams
       return NextResponse.json({
-        aiTone: null,
-        aiWritingStyle: null,
-        aiCustomInstructions: null,
+        aiTone: DEFAULT_AI_TONE,
+        aiWritingStyle: DEFAULT_AI_WRITING_STYLE,
+        aiCustomInstructions: DEFAULT_AI_CUSTOM_INSTRUCTIONS,
       });
     }
 
     const data = docSnap.data() || {};
     return NextResponse.json({
-      aiTone: data.aiTone ?? null,
-      aiWritingStyle: data.aiWritingStyle ?? null,
-      aiCustomInstructions: data.aiCustomInstructions ?? null,
+      aiTone: data.aiTone ?? DEFAULT_AI_TONE,
+      aiWritingStyle: data.aiWritingStyle ?? DEFAULT_AI_WRITING_STYLE,
+      aiCustomInstructions: data.aiCustomInstructions ?? DEFAULT_AI_CUSTOM_INSTRUCTIONS,
     });
   } catch (error) {
     console.error('Error fetching AI training config:', error);

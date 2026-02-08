@@ -208,20 +208,20 @@ export async function PATCH(
 
     const lead = { id, ...updatedData, messages };
 
-    // Publish events
+    // Publish events + external notifications
     if (validatedData.status && validatedData.status !== currentLead.status) {
       await events.leadStatusChanged({
         id: lead.id,
         businessName: lead.businessName as string,
         status: lead.status as string,
         previousStatus: currentLead.status,
-      });
+      }, teamId);
     } else {
       await events.leadUpdated({
         id: lead.id,
         businessName: lead.businessName as string,
         status: lead.status as string,
-      });
+      }, teamId);
     }
 
     return NextResponse.json(lead);
@@ -269,7 +269,7 @@ export async function DELETE(
 
     await leadDoc(teamId, id).delete();
 
-    await events.leadDeleted(id);
+    await events.leadDeleted(id, teamId);
 
     return NextResponse.json({ success: true });
   } catch (error) {

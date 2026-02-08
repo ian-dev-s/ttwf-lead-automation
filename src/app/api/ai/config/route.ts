@@ -38,7 +38,9 @@ export async function GET(_request: NextRequest) {
 
     // Get status for OpenRouter
     const providers: SimpleProvider[] = ['OPENROUTER'];
-    const providerStatuses = providers.map(p => getProviderStatus(teamId, p));
+    const providerStatuses = await Promise.all(
+      providers.map(p => getProviderStatus(teamId, p))
+    );
 
     return NextResponse.json({
       configs,

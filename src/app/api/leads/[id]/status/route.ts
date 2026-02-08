@@ -102,7 +102,7 @@ export async function PATCH(
       businessName: lead.businessName as string,
       status: lead.status as string,
       previousStatus: currentLead.status as string,
-    });
+    }, teamId);
 
     return NextResponse.json(lead);
   } catch (error) {

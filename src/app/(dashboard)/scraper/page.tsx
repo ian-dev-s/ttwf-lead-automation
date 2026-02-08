@@ -15,8 +15,10 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
+import { Switch } from '@/components/ui/switch';
 import { formatDateTime } from '@/lib/utils';
-import { Activity, CheckCircle, Clock, Loader2, Play, Search, Sparkles, StopCircle, Trash2, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle, Clock, Loader2, Play, Save, Search, Settings, Sparkles, StopCircle, Trash2, XCircle } from 'lucide-react';
+import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 
 interface ScrapingJob {
@@ -60,6 +62,21 @@ export default function ScraperPage() {
   const [stoppingJobId, setStoppingJobId] = useState<string | null>(null);
   const [viewingJobId, setViewingJobId] = useState<string | null>(null);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
+
+  // AI readiness state
+  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
+  const [hasActiveConfig, setHasActiveConfig] = useState<boolean | null>(null);
+
+  // Scraping configuration state (moved from Settings)
+  const [scrapingSettings, setScrapingSettings] = useState({
+    dailyLeadTarget: 10,
+    leadGenerationEnabled: true,
+    scrapeDelayMs: 2000,
+    maxLeadsPerRun: 20,
+    searchRadiusKm: 50,
+    minGoogleRating: 4.0,
+  });
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
 
   // Track if we had running jobs recently (to continue polling after completion)
   const [hadRunningJobsRecently, setHadRunningJobsRecently] = useState(false);
@@ -111,23 +128,67 @@ export default function ScraperPage() {
 
   const fetchJobs = async () => {
     try {
-      const response = await fetch('/api/scraper');
-      const data = await response.json();
+      const [scraperRes, aiRes, settingsRes] = await Promise.all([
+        fetch('/api/scraper'),
+        fetch('/api/ai/config'),
+        fetch('/api/settings'),
+      ]);
+
+      const data = await scraperRes.json();
       setJobs(data.jobs || []);
       setCategories(data.availableCategories || []);
       setCities(data.availableCities || []);
       setCountries(data.availableCountries || []);
       if (data.defaultCountry) {
         setDefaultCountry(data.defaultCountry);
-        // Set selected country to default on first load
         if (!selectedCountry || selectedCountry === 'ZA') {
           setSelectedCountry(data.defaultCountry);
         }
+      }
+
+      // Check AI readiness
+      if (aiRes.ok) {
+        const aiData = await aiRes.json();
+        const configs = aiData.configs || [];
+        const statuses = aiData.providerStatuses || [];
+        setHasApiKey(statuses.some((s: { isAvailable: boolean }) => s.isAvailable));
+        setHasActiveConfig(configs.some((c: { isActive: boolean }) => c.isActive));
+      }
+
+      // Load scraping settings
+      if (settingsRes.ok) {
+        const settingsData = await settingsRes.json();
+        setScrapingSettings({
+          dailyLeadTarget: settingsData.dailyLeadTarget ?? 10,
+          leadGenerationEnabled: settingsData.leadGenerationEnabled ?? true,
+          scrapeDelayMs: settingsData.scrapeDelayMs ?? 2000,
+          maxLeadsPerRun: settingsData.maxLeadsPerRun ?? 20,
+          searchRadiusKm: settingsData.searchRadiusKm ?? 50,
+          minGoogleRating: settingsData.minGoogleRating ?? 4.0,
+        });
       }
     } catch (error) {
       console.error('Error fetching jobs:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const aiReady = hasApiKey === true && hasActiveConfig === true;
+
+  const handleSaveScrapingSettings = async () => {
+    setIsSavingSettings(true);
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(scrapingSettings),
+      });
+      if (!response.ok) throw new Error('Failed to save scraping settings');
+    } catch (error) {
+      console.error('Error saving scraping settings:', error);
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -265,6 +326,33 @@ export default function ScraperPage() {
       />
 
       <div className="flex-1 p-6 overflow-y-auto space-y-6">
+        {/* AI Readiness Warning */}
+        {hasApiKey !== null && !aiReady && (
+          <Card className="border-amber-500/30 bg-amber-500/5">
+            <CardContent className="py-4">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="h-5 w-5 text-amber-500 mt-0.5 shrink-0" />
+                <div className="flex-1">
+                  <h4 className="font-medium text-sm text-amber-700 dark:text-amber-400">
+                    AI Configuration Required
+                  </h4>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {!hasApiKey
+                      ? 'No API key configured. The scraper needs an AI provider to enrich and generate messages for scraped leads.'
+                      : 'No active AI model configured. Add an AI configuration to enable lead enrichment and message generation.'}
+                  </p>
+                  <Link href="/settings">
+                    <Button variant="outline" size="sm" className="mt-2 border-amber-500/50 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10">
+                      <Settings className="h-4 w-4 mr-1" />
+                      {!hasApiKey ? 'Add API Key' : 'Configure AI Model'}
+                    </Button>
+                  </Link>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* New Scraping Job */}
         <Card>
           <CardHeader>
@@ -394,18 +482,25 @@ export default function ScraperPage() {
               </div>
             </div>
 
-            <Button
-              onClick={handleStartScraping}
-              disabled={isSubmitting}
-              className="w-full md:w-auto"
-            >
-              {isSubmitting ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Play className="h-4 w-4 mr-2" />
+            <div className="flex items-center gap-3">
+              <Button
+                onClick={handleStartScraping}
+                disabled={isSubmitting || !aiReady}
+                className="w-full md:w-auto"
+              >
+                {isSubmitting ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Play className="h-4 w-4 mr-2" />
+                )}
+                Start Scraping
+              </Button>
+              {!aiReady && hasApiKey !== null && (
+                <span className="text-xs text-amber-600 dark:text-amber-400">
+                  AI provider must be configured first
+                </span>
               )}
-              Start Scraping
-            </Button>
+            </div>
           </CardContent>
         </Card>
 
@@ -549,6 +644,119 @@ export default function ScraperPage() {
 
         {/* Process Manager */}
         <ProcessManager hasActiveJob={jobs.some(job => job.status === 'RUNNING')} />
+
+        {/* Scraping Configuration */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Settings className="h-5 w-5" />
+              Scraping Configuration
+            </CardTitle>
+            <CardDescription>
+              Configure automated lead generation and scraping behaviour
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label>Enable Automatic Lead Generation</Label>
+                <p className="text-sm text-muted-foreground">
+                  Automatically find and add new leads daily
+                </p>
+              </div>
+              <Switch
+                checked={scrapingSettings.leadGenerationEnabled}
+                onCheckedChange={(checked) =>
+                  setScrapingSettings((prev) => ({ ...prev, leadGenerationEnabled: checked }))
+                }
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <Label>Daily Lead Target</Label>
+                <div className="flex items-center gap-4">
+                  <Slider
+                    value={[scrapingSettings.dailyLeadTarget]}
+                    onValueChange={(v) =>
+                      setScrapingSettings((prev) => ({ ...prev, dailyLeadTarget: v[0] }))
+                    }
+                    min={5}
+                    max={50}
+                    step={5}
+                    className="flex-1"
+                  />
+                  <span className="w-12 text-center font-medium">
+                    {scrapingSettings.dailyLeadTarget}
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Min Google Rating</Label>
+                <div className="flex items-center gap-4">
+                  <Slider
+                    value={[scrapingSettings.minGoogleRating]}
+                    onValueChange={(v) =>
+                      setScrapingSettings((prev) => ({ ...prev, minGoogleRating: v[0] }))
+                    }
+                    min={3}
+                    max={5}
+                    step={0.5}
+                    className="flex-1"
+                  />
+                  <span className="w-12 text-center font-medium">
+                    {scrapingSettings.minGoogleRating}+
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Search Radius (km)</Label>
+                <div className="flex items-center gap-4">
+                  <Slider
+                    value={[scrapingSettings.searchRadiusKm]}
+                    onValueChange={(v) =>
+                      setScrapingSettings((prev) => ({ ...prev, searchRadiusKm: v[0] }))
+                    }
+                    min={10}
+                    max={100}
+                    step={10}
+                    className="flex-1"
+                  />
+                  <span className="w-12 text-center font-medium">
+                    {scrapingSettings.searchRadiusKm}km
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Delay Between Requests (ms)</Label>
+                <div className="flex items-center gap-4">
+                  <Slider
+                    value={[scrapingSettings.scrapeDelayMs]}
+                    onValueChange={(v) =>
+                      setScrapingSettings((prev) => ({ ...prev, scrapeDelayMs: v[0] }))
+                    }
+                    min={1000}
+                    max={5000}
+                    step={500}
+                    className="flex-1"
+                  />
+                  <span className="w-16 text-center font-medium">
+                    {scrapingSettings.scrapeDelayMs}ms
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <Button onClick={handleSaveScrapingSettings} disabled={isSavingSettings}>
+              {isSavingSettings && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              <Save className="h-4 w-4 mr-2" />
+              Save Scraping Settings
+            </Button>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Job Log Viewer Modal */}

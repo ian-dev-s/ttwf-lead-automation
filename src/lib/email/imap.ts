@@ -1,6 +1,7 @@
-import { inboundEmailsCollection, leadsCollection } from '@/lib/firebase/collections';
+import { inboundEmailsCollection, leadsCollection, leadDoc } from '@/lib/firebase/collections';
 import { ImapFlow } from 'imapflow';
 import { getImapConfig, isImapConfigured, getProxyUrl } from './config';
+import { generateInboundReply } from '@/lib/ai/reply';
 
 export interface FetchResult {
   fetched: number;
@@ -129,8 +130,11 @@ export async function fetchNewEmails(teamId: string): Promise<FetchResult> {
             receivedAt: new Date(receivedAt),
             isRead: false,
             isProcessed: false,
+            status: 'pending',
             leadId: null,
             aiReplyId: null,
+            aiReplyContent: null,
+            aiReplySubject: null,
             createdAt: now,
             updatedAt: now,
           });
@@ -138,12 +142,49 @@ export async function fetchNewEmails(teamId: string): Promise<FetchResult> {
           result.fetched++;
 
           // Try to match to a lead (team-scoped)
+          let matchedLeadId: string | null = null;
           if (fromEmail) {
-            const matchedLeadId = await matchEmailToLead(teamId, fromEmail);
+            matchedLeadId = await matchEmailToLead(teamId, fromEmail);
             if (matchedLeadId) {
               await docRef.update({ leadId: matchedLeadId });
               result.matched++;
             }
+          }
+
+          // Generate AI reply (non-blocking — failures are logged but don't break the flow)
+          try {
+            let leadContext: { businessName?: string; industry?: string; location?: string } | null = null;
+            if (matchedLeadId) {
+              const leadSnap = await leadDoc(teamId, matchedLeadId).get();
+              if (leadSnap.exists) {
+                const ld = leadSnap.data()!;
+                leadContext = {
+                  businessName: ld.businessName,
+                  industry: ld.industry || undefined,
+                  location: ld.location,
+                };
+              }
+            }
+
+            const emailBody = bodyText || bodyHtml?.replace(/<[^>]+>/g, ' ').trim() || '';
+            if (emailBody) {
+              const reply = await generateInboundReply({
+                teamId,
+                from: fromAddress,
+                subject,
+                bodyText: emailBody,
+                leadContext,
+              });
+              await docRef.update({
+                aiReplyContent: reply.content,
+                aiReplySubject: reply.subject,
+                updatedAt: new Date(),
+              });
+            }
+          } catch (aiError) {
+            const aiErrMsg = aiError instanceof Error ? aiError.message : String(aiError);
+            console.error(`[IMAP] AI reply generation failed for ${messageId}:`, aiErrMsg);
+            // Email stays with status: 'pending' and aiReplyContent: null — user can regenerate later
           }
 
           // Mark as seen in IMAP

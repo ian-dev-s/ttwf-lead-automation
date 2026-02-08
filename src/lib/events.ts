@@ -167,36 +167,42 @@ export function createSubscriber(): Redis {
 }
 
 // Publish an event (fire and forget - don't block if Redis is down)
-export async function publishEvent<T>(type: EventType, data: T): Promise<void> {
+// When teamId is provided, external notifications (Telegram, Slack, etc.) are also dispatched.
+export async function publishEvent<T>(type: EventType, data: T, teamId?: string): Promise<void> {
+  const event: AppEvent<T> = {
+    type,
+    data,
+    timestamp: Date.now(),
+  };
+
   try {
     const publisher = await getPublisher();
     if (!publisher) {
       console.log(`[Events] No publisher available, skipping event: ${type}`);
-      return;
-    }
-    
-    const event: AppEvent<T> = {
-      type,
-      data,
-      timestamp: Date.now(),
-    };
-    
-    // Check if Redis is connected before publishing
-    if (publisher.status !== 'ready') {
+    } else if (publisher.status !== 'ready') {
       console.log(`[Events] Redis not ready (status: ${publisher.status}), skipping event: ${type}`);
-      return;
+    } else {
+      // Use a short timeout to avoid blocking
+      await Promise.race([
+        publisher.publish(CHANNEL, JSON.stringify(event)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000)),
+      ]);
+      console.log(`[Events] Published event: ${type}`);
     }
-    
-    // Use a short timeout to avoid blocking
-    await Promise.race([
-      publisher.publish(CHANNEL, JSON.stringify(event)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000)),
-    ]);
-    
-    console.log(`[Events] Published event: ${type}`);
   } catch (err) {
     // Log but don't throw - real-time updates are optional
     console.error(`[Events] Failed to publish event ${type}:`, err instanceof Error ? err.message : err);
+  }
+
+  // Dispatch to external notification providers (non-blocking)
+  if (teamId) {
+    import('@/lib/notifications/manager').then(({ notify }) => {
+      notify(teamId, event).catch((err) => {
+        console.error(`[Events] Notification dispatch error for ${type}:`, err);
+      });
+    }).catch(() => {
+      // Ignore dynamic import failures
+    });
   }
 }
 
@@ -232,22 +238,32 @@ export async function subscribeToEvents(
 }
 
 // Helper functions for common events
+// Each helper accepts an optional trailing `teamId` to trigger external notifications.
 export const events = {
-  leadCreated: (lead: LeadEvent) => publishEvent('lead:created', lead),
-  leadUpdated: (lead: LeadEvent) => publishEvent('lead:updated', lead),
-  leadDeleted: (id: string) => publishEvent('lead:deleted', { id }),
-  leadStatusChanged: (lead: LeadEvent) => publishEvent('lead:status_changed', lead),
-  messageCreated: (messageId: string, leadId: string) => 
-    publishEvent('message:created', { messageId, leadId }),
-  messageUpdated: (messageId: string) => 
-    publishEvent('message:updated', { messageId }),
-  messageApproved: (messageId: string) => 
-    publishEvent('message:approved', { messageId }),
-  scraperStarted: (event: ScraperEvent) => publishEvent('scraper:started', event),
-  scraperProgress: (event: ScraperEvent) => publishEvent('scraper:progress', event),
-  scraperCompleted: (event: ScraperEvent) => publishEvent('scraper:completed', event),
-  scraperError: (event: ScraperEvent) => publishEvent('scraper:error', event),
-  statsUpdated: (stats: StatsEvent) => publishEvent('stats:updated', stats),
+  leadCreated: (lead: LeadEvent, teamId?: string) =>
+    publishEvent('lead:created', lead, teamId),
+  leadUpdated: (lead: LeadEvent, teamId?: string) =>
+    publishEvent('lead:updated', lead, teamId),
+  leadDeleted: (id: string, teamId?: string) =>
+    publishEvent('lead:deleted', { id }, teamId),
+  leadStatusChanged: (lead: LeadEvent, teamId?: string) =>
+    publishEvent('lead:status_changed', lead, teamId),
+  messageCreated: (messageId: string, leadId: string, teamId?: string) =>
+    publishEvent('message:created', { messageId, leadId }, teamId),
+  messageUpdated: (messageId: string, teamId?: string) =>
+    publishEvent('message:updated', { messageId }, teamId),
+  messageApproved: (messageId: string, data?: Record<string, unknown>, teamId?: string) =>
+    publishEvent('message:approved', { messageId, ...data }, teamId),
+  scraperStarted: (event: ScraperEvent, teamId?: string) =>
+    publishEvent('scraper:started', event, teamId),
+  scraperProgress: (event: ScraperEvent, teamId?: string) =>
+    publishEvent('scraper:progress', event, teamId),
+  scraperCompleted: (event: ScraperEvent, teamId?: string) =>
+    publishEvent('scraper:completed', event, teamId),
+  scraperError: (event: ScraperEvent, teamId?: string) =>
+    publishEvent('scraper:error', event, teamId),
+  statsUpdated: (stats: StatsEvent) =>
+    publishEvent('stats:updated', stats),
 };
 
 // Initialize publisher eagerly on module load (non-blocking)

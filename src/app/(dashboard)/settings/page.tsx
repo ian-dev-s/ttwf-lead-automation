@@ -17,7 +17,7 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { modelOptions } from '@/lib/ai/constants';
-import { ArrowDownToLine, ArrowUpFromLine, Brain, Check, CheckCircle2, Globe, Key, Loader2, Mail, MessageSquare, Palette, Save, Search, Trash2, XCircle } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, Bell, Brain, Check, CheckCircle2, Globe, Key, Loader2, Mail, MessageSquare, Palette, Save, Send, Search, Trash2, XCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 interface ProviderStatus {
@@ -79,6 +79,8 @@ interface TeamSettingsState {
   socialLinkedinUrl: string | null;
   socialTwitterUrl: string | null;
   socialTiktokUrl: string | null;
+  // IMAP Polling
+  imapPollingIntervalMinutes: number;
 }
 
 interface AIConfig {
@@ -158,18 +160,40 @@ export default function SettingsPage() {
     label: '',
   });
 
+  // Notification state
+  const [notifSettings, setNotifSettings] = useState({
+    notificationsEnabled: false,
+    telegramEnabled: false,
+    telegramBotToken: '',
+    telegramChatId: '',
+    telegramBotTokenMasked: null as string | null,
+    telegramChatIdMasked: null as string | null,
+    telegramHasToken: false,
+    telegramHasChatId: false,
+    telegramEvents: ['message:approved', 'scraper:completed', 'scraper:error'] as string[],
+    // Detected info (shown after verification)
+    telegramBotUsername: null as string | null,
+    telegramChatTitle: null as string | null,
+  });
+  const [isSavingNotif, setIsSavingNotif] = useState(false);
+  const [isTestingNotif, setIsTestingNotif] = useState(false);
+  const [isVerifyingTelegram, setIsVerifyingTelegram] = useState(false);
+  const [notifSaveResult, setNotifSaveResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [notifTestResult, setNotifTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
   useEffect(() => {
     fetchData();
   }, []);
 
   const fetchData = async () => {
     try {
-      const [settingsRes, aiRes, emailRes, emailConfigRes, apiKeysRes] = await Promise.all([
+      const [settingsRes, aiRes, emailRes, emailConfigRes, apiKeysRes, notifRes] = await Promise.all([
         fetch('/api/settings'),
         fetch('/api/ai/config'),
         fetch('/api/email/status'),
         fetch('/api/settings/email-config'),
         fetch('/api/ai/keys'),
+        fetch('/api/notifications/settings'),
       ]);
 
       const settingsData = await settingsRes.json();
@@ -177,6 +201,7 @@ export default function SettingsPage() {
       const emailData = emailRes.ok ? await emailRes.json() : null;
       const emailConfigData = emailConfigRes.ok ? await emailConfigRes.json() : null;
       const apiKeysData = apiKeysRes.ok ? await apiKeysRes.json() : [];
+      const notifData = notifRes.ok ? await notifRes.json() : null;
 
       setSettings(settingsData);
       setAIConfigs(aiData.configs || []);
@@ -184,7 +209,24 @@ export default function SettingsPage() {
       setEmailStatus(emailData);
       setEmailConfig(emailConfigData);
       setApiKeys(apiKeysData);
-      
+
+      // Initialize notification settings
+      if (notifData) {
+        setNotifSettings({
+          notificationsEnabled: notifData.notificationsEnabled ?? false,
+          telegramEnabled: notifData.telegramEnabled ?? false,
+          telegramBotToken: '',
+          telegramChatId: '',
+          telegramBotTokenMasked: notifData.telegramBotTokenMasked ?? null,
+          telegramChatIdMasked: notifData.telegramChatIdMasked ?? null,
+          telegramHasToken: notifData.telegramHasToken ?? false,
+          telegramHasChatId: notifData.telegramHasChatId ?? false,
+          telegramEvents: notifData.telegramEvents ?? ['message:approved', 'scraper:completed', 'scraper:error'],
+          telegramBotUsername: null,
+          telegramChatTitle: null,
+        });
+      }
+
       // Initialize email forms from config
       if (emailConfigData) {
         setSmtpForm({
@@ -443,6 +485,15 @@ export default function SettingsPage() {
       const data = await response.json();
       setEmailConfig(data);
       
+      // Save polling interval to team settings
+      if (settings) {
+        await fetch('/api/settings', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imapPollingIntervalMinutes: settings.imapPollingIntervalMinutes ?? 0 }),
+        });
+      }
+
       // Clear password fields after successful save
       setSmtpForm(prev => ({ ...prev, password: '' }));
       setImapForm(prev => ({ ...prev, password: '' }));
@@ -613,6 +664,166 @@ export default function SettingsPage() {
     }
   };
 
+  // ─── Notification Handlers ─────────────────────────────────
+
+  const NOTIFIABLE_EVENT_OPTIONS = [
+    { type: 'lead:created', label: 'New lead created' },
+    { type: 'lead:status_changed', label: 'Lead status changed' },
+    { type: 'message:created', label: 'Message generated' },
+    { type: 'message:approved', label: 'Message approved / sent' },
+    { type: 'scraper:completed', label: 'Scraper completed' },
+    { type: 'scraper:error', label: 'Scraper error' },
+  ];
+
+  const handleSaveNotifSettings = async () => {
+    setIsSavingNotif(true);
+    setNotifSaveResult(null);
+    try {
+      const payload: Record<string, unknown> = {
+        notificationsEnabled: notifSettings.notificationsEnabled,
+        telegramEnabled: notifSettings.telegramEnabled,
+        telegramEvents: notifSettings.telegramEvents,
+      };
+      // Only send credentials if the user entered new values
+      if (notifSettings.telegramBotToken) {
+        payload.telegramBotToken = notifSettings.telegramBotToken;
+      }
+      if (notifSettings.telegramChatId) {
+        payload.telegramChatId = notifSettings.telegramChatId;
+      }
+
+      const res = await fetch('/api/notifications/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to save');
+      }
+      setNotifSaveResult({ success: true, message: 'Notification settings saved' });
+      // Refresh settings to get new masked values
+      const refreshRes = await fetch('/api/notifications/settings');
+      if (refreshRes.ok) {
+        const refreshData = await refreshRes.json();
+        setNotifSettings((prev) => ({
+          ...prev,
+          telegramBotToken: '',
+          telegramChatId: '',
+          telegramBotTokenMasked: refreshData.telegramBotTokenMasked ?? null,
+          telegramChatIdMasked: refreshData.telegramChatIdMasked ?? null,
+          telegramHasToken: refreshData.telegramHasToken ?? false,
+          telegramHasChatId: refreshData.telegramHasChatId ?? false,
+        }));
+      }
+    } catch (error) {
+      setNotifSaveResult({
+        success: false,
+        message: error instanceof Error ? error.message : 'Failed to save notification settings',
+      });
+    } finally {
+      setIsSavingNotif(false);
+    }
+  };
+
+  const handleVerifyTelegram = async () => {
+    if (!notifSettings.telegramBotToken) {
+      setNotifTestResult({ success: false, message: 'Please enter a bot token first' });
+      return;
+    }
+
+    setIsVerifyingTelegram(true);
+    setNotifTestResult(null);
+    try {
+      const res = await fetch('/api/notifications/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel: 'telegram',
+          action: 'verify',
+          botToken: notifSettings.telegramBotToken,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.success && data.chatId) {
+        // Auto-fill the detected chat ID
+        setNotifSettings((prev) => ({
+          ...prev,
+          telegramChatId: data.chatId,
+          telegramBotUsername: data.bot?.username || null,
+          telegramChatTitle: data.chatTitle || null,
+        }));
+        setNotifTestResult({
+          success: true,
+          message: `Connected to @${data.bot?.username}! Chat "${data.chatTitle}" detected.`,
+        });
+      } else if (data.tokenValid) {
+        // Token valid but no chat found
+        setNotifSettings((prev) => ({
+          ...prev,
+          telegramBotUsername: data.bot?.username || null,
+        }));
+        setNotifTestResult({
+          success: false,
+          message: `Bot @${data.bot?.username} verified, but: ${data.error}`,
+        });
+      } else {
+        setNotifTestResult({ success: false, message: data.error || 'Verification failed' });
+      }
+    } catch (error) {
+      setNotifTestResult({
+        success: false,
+        message: error instanceof Error ? error.message : 'Verification failed',
+      });
+    } finally {
+      setIsVerifyingTelegram(false);
+    }
+  };
+
+  const handleTestNotification = async () => {
+    setIsTestingNotif(true);
+    setNotifTestResult(null);
+    try {
+      const payload: Record<string, unknown> = { channel: 'telegram', action: 'test' };
+      // Use current values from state
+      if (notifSettings.telegramBotToken) {
+        payload.botToken = notifSettings.telegramBotToken;
+      }
+      if (notifSettings.telegramChatId) {
+        payload.chatId = notifSettings.telegramChatId;
+      }
+
+      const res = await fetch('/api/notifications/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setNotifTestResult({ success: true, message: 'Test message sent to Telegram!' });
+      } else {
+        setNotifTestResult({ success: false, message: data.error || 'Test failed' });
+      }
+    } catch (error) {
+      setNotifTestResult({
+        success: false,
+        message: error instanceof Error ? error.message : 'Test failed',
+      });
+    } finally {
+      setIsTestingNotif(false);
+    }
+  };
+
+  const toggleNotifEvent = (eventType: string) => {
+    setNotifSettings((prev) => {
+      const events = prev.telegramEvents.includes(eventType)
+        ? prev.telegramEvents.filter((e) => e !== eventType)
+        : [...prev.telegramEvents, eventType];
+      return { ...prev, telegramEvents: events };
+    });
+  };
+
   if (isLoading) {
     return (
       <div className="flex flex-col h-full">
@@ -637,10 +848,6 @@ export default function SettingsPage() {
               <Brain className="h-4 w-4" />
               AI Configuration
             </TabsTrigger>
-            <TabsTrigger value="scraping" className="gap-2">
-              <Search className="h-4 w-4" />
-              Scraping Settings
-            </TabsTrigger>
             <TabsTrigger value="email" className="gap-2">
               <Mail className="h-4 w-4" />
               Email
@@ -656,6 +863,10 @@ export default function SettingsPage() {
             <TabsTrigger value="proxy" className="gap-2">
               <Globe className="h-4 w-4" />
               Proxy
+            </TabsTrigger>
+            <TabsTrigger value="notifications" className="gap-2">
+              <Bell className="h-4 w-4" />
+              Notifications
             </TabsTrigger>
           </TabsList>
 
@@ -786,7 +997,7 @@ export default function SettingsPage() {
               </CardHeader>
               <CardContent className="space-y-6">
                 {/* Existing Configs */}
-                {aiConfigs.length > 0 && (
+                {aiConfigs.length > 0 ? (
                   <div className="space-y-2">
                     {aiConfigs.map((config) => (
                       <div
@@ -799,7 +1010,7 @@ export default function SettingsPage() {
                           <div className="flex items-center gap-2">
                             <span className="font-medium">{config.name}</span>
                             {config.isActive && (
-                              <Badge variant="default">Default</Badge>
+                              <Badge variant="default">Active</Badge>
                             )}
                           </div>
                           <p className="text-sm text-muted-foreground">
@@ -814,7 +1025,7 @@ export default function SettingsPage() {
                               onClick={() => handleSetActiveConfig(config.id)}
                               disabled={isSaving}
                             >
-                              Set Default
+                              Set Active
                             </Button>
                           )}
                           <Button
@@ -830,10 +1041,20 @@ export default function SettingsPage() {
                       </div>
                     ))}
                   </div>
+                ) : (
+                  <div className="text-center py-6 text-muted-foreground border rounded-lg bg-muted/20">
+                    <Brain className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                    <p className="text-sm font-medium">No active AI configuration</p>
+                    <p className="text-xs mt-1">
+                      {availableProviders.length > 0
+                        ? 'Add a configuration below to enable AI-powered message generation'
+                        : 'Add an API key above first, then a default configuration will be created automatically'}
+                    </p>
+                  </div>
                 )}
 
                 {/* Add New Config */}
-                {availableProviders.length > 0 ? (
+                {availableProviders.length > 0 && (
                   <div className="space-y-4 pt-4 border-t">
                     <Label className="text-base">Add Configuration</Label>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -889,135 +1110,7 @@ export default function SettingsPage() {
                       Add Configuration
                     </Button>
                   </div>
-                ) : (
-                  <div className="text-center py-8 text-muted-foreground">
-                    <Key className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>No API keys configured</p>
-                    <p className="text-sm">Go to Settings to configure</p>
-                  </div>
                 )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* Scraping Settings Tab */}
-          <TabsContent value="scraping" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Scraping Configuration</CardTitle>
-                <CardDescription>
-                  Configure how the lead scraper searches for businesses.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label>Enable Automatic Lead Generation</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Automatically find and add new leads daily
-                    </p>
-                  </div>
-                  <Switch
-                    checked={settings?.leadGenerationEnabled ?? true}
-                    onCheckedChange={(checked) =>
-                      setSettings((prev) =>
-                        prev ? { ...prev, leadGenerationEnabled: checked } : null
-                      )
-                    }
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <Label>Daily Lead Target</Label>
-                    <div className="flex items-center gap-4">
-                      <Slider
-                        value={[settings?.dailyLeadTarget ?? 10]}
-                        onValueChange={(v) =>
-                          setSettings((prev) =>
-                            prev ? { ...prev, dailyLeadTarget: v[0] } : null
-                          )
-                        }
-                        min={5}
-                        max={50}
-                        step={5}
-                        className="flex-1"
-                      />
-                      <span className="w-12 text-center font-medium">
-                        {settings?.dailyLeadTarget ?? 10}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Min Google Rating</Label>
-                    <div className="flex items-center gap-4">
-                      <Slider
-                        value={[settings?.minGoogleRating ?? 4.0]}
-                        onValueChange={(v) =>
-                          setSettings((prev) =>
-                            prev ? { ...prev, minGoogleRating: v[0] } : null
-                          )
-                        }
-                        min={3}
-                        max={5}
-                        step={0.5}
-                        className="flex-1"
-                      />
-                      <span className="w-12 text-center font-medium">
-                        {settings?.minGoogleRating ?? 4.0}+
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Search Radius (km)</Label>
-                    <div className="flex items-center gap-4">
-                      <Slider
-                        value={[settings?.searchRadiusKm ?? 50]}
-                        onValueChange={(v) =>
-                          setSettings((prev) =>
-                            prev ? { ...prev, searchRadiusKm: v[0] } : null
-                          )
-                        }
-                        min={10}
-                        max={100}
-                        step={10}
-                        className="flex-1"
-                      />
-                      <span className="w-12 text-center font-medium">
-                        {settings?.searchRadiusKm ?? 50}km
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Delay Between Requests (ms)</Label>
-                    <div className="flex items-center gap-4">
-                      <Slider
-                        value={[settings?.scrapeDelayMs ?? 2000]}
-                        onValueChange={(v) =>
-                          setSettings((prev) =>
-                            prev ? { ...prev, scrapeDelayMs: v[0] } : null
-                          )
-                        }
-                        min={1000}
-                        max={5000}
-                        step={500}
-                        className="flex-1"
-                      />
-                      <span className="w-16 text-center font-medium">
-                        {settings?.scrapeDelayMs ?? 2000}ms
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <Button onClick={handleSaveSettings} disabled={isSaving}>
-                  {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                  <Save className="h-4 w-4 mr-2" />
-                  Save Settings
-                </Button>
               </CardContent>
             </Card>
           </TabsContent>
@@ -1130,6 +1223,38 @@ export default function SettingsPage() {
                         {imapTestResult.message}
                       </div>
                     )}
+                  </div>
+
+                  {/* Auto-check interval */}
+                  <div className="flex items-center justify-between pt-2">
+                    <div className="space-y-1">
+                      <Label>Check for New Emails Automatically</Label>
+                      <p className="text-sm text-muted-foreground">
+                        How often to automatically check the inbox for new messages
+                      </p>
+                    </div>
+                    <Select
+                      value={String(settings?.imapPollingIntervalMinutes ?? 0)}
+                      onValueChange={(value) =>
+                        setSettings((prev) =>
+                          prev ? { ...prev, imapPollingIntervalMinutes: parseInt(value) } : null
+                        )
+                      }
+                    >
+                      <SelectTrigger className="w-[180px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="0">Disabled</SelectItem>
+                        <SelectItem value="1">Every 1 minute</SelectItem>
+                        <SelectItem value="2">Every 2 minutes</SelectItem>
+                        <SelectItem value="5">Every 5 minutes</SelectItem>
+                        <SelectItem value="10">Every 10 minutes</SelectItem>
+                        <SelectItem value="15">Every 15 minutes</SelectItem>
+                        <SelectItem value="30">Every 30 minutes</SelectItem>
+                        <SelectItem value="60">Every 60 minutes</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                 </div>
 
@@ -1799,6 +1924,219 @@ export default function SettingsPage() {
                   </Button>
                 </div>
               </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Notifications Tab */}
+          <TabsContent value="notifications" className="space-y-4">
+            {/* Master Toggle */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Bell className="h-5 w-5" />
+                  Notification Settings
+                </CardTitle>
+                <CardDescription>
+                  Receive real-time alerts about leads, messages, and scraper activity on your favourite messaging platforms.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>Enable Notifications</Label>
+                    <p className="text-sm text-muted-foreground">Master switch for all notification providers</p>
+                  </div>
+                  <Switch
+                    checked={notifSettings.notificationsEnabled}
+                    onCheckedChange={(checked) =>
+                      setNotifSettings((prev) => ({ ...prev, notificationsEnabled: checked }))
+                    }
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Telegram Provider */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <Send className="h-5 w-5" />
+                      Telegram
+                    </CardTitle>
+                    <CardDescription className="mt-1.5">
+                      Send notifications to a Telegram chat via a bot.
+                    </CardDescription>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {notifSettings.telegramHasToken && notifSettings.telegramHasChatId ? (
+                      <Badge variant="outline" className="text-green-600 border-green-600">
+                        <CheckCircle2 className="h-3 w-3 mr-1" />
+                        Configured
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-muted-foreground">
+                        Not configured
+                      </Badge>
+                    )}
+                    <Switch
+                      checked={notifSettings.telegramEnabled}
+                      onCheckedChange={(checked) =>
+                        setNotifSettings((prev) => ({ ...prev, telegramEnabled: checked }))
+                      }
+                    />
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="rounded-lg bg-muted/50 p-3 text-sm text-muted-foreground space-y-1">
+                  <p><strong>Quick setup:</strong></p>
+                  <ol className="list-decimal list-inside space-y-0.5">
+                    <li>Message <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-primary underline">@BotFather</a> on Telegram and create a new bot.</li>
+                    <li>Copy the <strong>Bot Token</strong> and paste it below.</li>
+                    <li>Start a chat with your bot (or add it to a group) and send <code>/start</code>.</li>
+                    <li>Click <strong>Verify & Detect Chat</strong> — we'll find your chat automatically!</li>
+                  </ol>
+                </div>
+
+                {/* Bot Token */}
+                <div className="space-y-2">
+                  <Label htmlFor="telegram-bot-token">Bot Token</Label>
+                  {notifSettings.telegramHasToken && !notifSettings.telegramBotToken && (
+                    <p className="text-xs text-muted-foreground">
+                      Current: {notifSettings.telegramBotTokenMasked} — leave blank to keep
+                    </p>
+                  )}
+                  <div className="flex gap-2">
+                    <Input
+                      id="telegram-bot-token"
+                      type="password"
+                      placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+                      value={notifSettings.telegramBotToken}
+                      onChange={(e) =>
+                        setNotifSettings((prev) => ({ ...prev, telegramBotToken: e.target.value }))
+                      }
+                      className="flex-1"
+                    />
+                    <Button
+                      variant="secondary"
+                      onClick={handleVerifyTelegram}
+                      disabled={isVerifyingTelegram || !notifSettings.telegramBotToken}
+                    >
+                      {isVerifyingTelegram && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Verify & Detect Chat
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Detected Chat Info */}
+                {(notifSettings.telegramChatId || notifSettings.telegramHasChatId) && (
+                  <div className="rounded-lg border bg-green-50 dark:bg-green-950/20 p-3 text-sm space-y-1">
+                    <p className="font-medium text-green-700 dark:text-green-400">
+                      <CheckCircle2 className="h-4 w-4 inline mr-1" />
+                      Chat detected
+                    </p>
+                    <p className="text-muted-foreground">
+                      {notifSettings.telegramChatTitle && (
+                        <span>Chat: <strong>{notifSettings.telegramChatTitle}</strong> • </span>
+                      )}
+                      ID: <code className="bg-muted px-1 rounded">{notifSettings.telegramChatId || notifSettings.telegramChatIdMasked}</code>
+                    </p>
+                    {notifSettings.telegramBotUsername && (
+                      <p className="text-muted-foreground">
+                        Bot: <a href={`https://t.me/${notifSettings.telegramBotUsername}`} target="_blank" rel="noreferrer" className="text-primary">@{notifSettings.telegramBotUsername}</a>
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Event Toggles */}
+                <div className="space-y-2">
+                  <Label>Events to notify</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {NOTIFIABLE_EVENT_OPTIONS.map((opt) => (
+                      <label key={opt.type} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4"
+                          checked={notifSettings.telegramEvents.includes(opt.type)}
+                          onChange={() => toggleNotifEvent(opt.type)}
+                        />
+                        <span className="text-sm">{opt.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Result Messages */}
+                {notifSaveResult && (
+                  <div className={`flex items-center gap-2 text-sm ${notifSaveResult.success ? 'text-green-600' : 'text-destructive'}`}>
+                    {notifSaveResult.success ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                    {notifSaveResult.message}
+                  </div>
+                )}
+                {notifTestResult && (
+                  <div className={`flex items-center gap-2 text-sm ${notifTestResult.success ? 'text-green-600' : 'text-destructive'}`}>
+                    {notifTestResult.success ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                    {notifTestResult.message}
+                  </div>
+                )}
+
+                {/* Action Buttons */}
+                <div className="pt-4 border-t flex gap-3">
+                  <Button onClick={handleSaveNotifSettings} disabled={isSavingNotif}>
+                    {isSavingNotif && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    <Save className="h-4 w-4 mr-2" />
+                    Save Settings
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={handleTestNotification}
+                    disabled={isTestingNotif || (!notifSettings.telegramChatId && !notifSettings.telegramHasChatId)}
+                  >
+                    {isTestingNotif && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    <Send className="h-4 w-4 mr-2" />
+                    Test Connection
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Slack (Coming Soon) */}
+            <Card className="opacity-60">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <MessageSquare className="h-5 w-5" />
+                      Slack
+                    </CardTitle>
+                    <CardDescription className="mt-1.5">
+                      Post notifications to a Slack channel via webhook.
+                    </CardDescription>
+                  </div>
+                  <Badge variant="secondary">Coming soon</Badge>
+                </div>
+              </CardHeader>
+            </Card>
+
+            {/* WhatsApp (Coming Soon) */}
+            <Card className="opacity-60">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <MessageSquare className="h-5 w-5" />
+                      WhatsApp
+                    </CardTitle>
+                    <CardDescription className="mt-1.5">
+                      Send notifications via WhatsApp Business API.
+                    </CardDescription>
+                  </div>
+                  <Badge variant="secondary">Coming soon</Badge>
+                </div>
+              </CardHeader>
             </Card>
           </TabsContent>
         </Tabs>

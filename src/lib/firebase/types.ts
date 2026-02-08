@@ -115,6 +115,24 @@ export interface TeamSettingsDoc {
   // Options
   proxyDnsOverSocks: boolean;
 
+  // ─── Notifications ──────────────────────────────────────────
+  notificationsEnabled: boolean;
+
+  // Telegram (bot token & chat ID are encrypted)
+  telegramEnabled: boolean;
+  telegramBotToken: string | null;
+  telegramChatId: string | null;
+  telegramEvents: string[];
+
+  // Slack (webhook URL is encrypted) — future
+  slackEnabled: boolean;
+  slackWebhookUrl: string | null;
+  slackEvents: string[];
+
+  // ─── IMAP Polling ──────────────────────────────────────────
+  /** 0 = disabled, otherwise minutes between automatic IMAP checks */
+  imapPollingIntervalMinutes: number;
+
   updatedAt: Date;
 }
 
@@ -305,6 +323,8 @@ export interface AISampleResponseDoc {
 
 // ─── Inbound Emails ────────────────────────────────────────
 
+export type InboundEmailStatus = 'pending' | 'approved' | 'rejected';
+
 export interface InboundEmailDoc {
   messageId: string;
   from: string;
@@ -315,8 +335,11 @@ export interface InboundEmailDoc {
   receivedAt: Date;
   isRead: boolean;
   isProcessed: boolean;
+  status: InboundEmailStatus;
   leadId: string | null;
   aiReplyId: string | null;
+  aiReplyContent: string | null;
+  aiReplySubject: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

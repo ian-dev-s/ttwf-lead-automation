@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { teamSettingsDoc, stripUndefined } from '@/lib/firebase/collections';
+import { stripUndefined, teamSettingsDoc } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -31,6 +31,8 @@ const settingsSchema = z.object({
   aiTone: z.string().nullable().optional(),
   aiWritingStyle: z.string().nullable().optional(),
   aiCustomInstructions: z.string().nullable().optional(),
+  // IMAP Polling
+  imapPollingIntervalMinutes: z.number().min(0).max(60).optional(),
 });
 
 // GET /api/settings - Get system settings
@@ -90,9 +92,9 @@ export async function GET(_request: NextRequest) {
         socialLinkedinUrl: null,
         socialTwitterUrl: null,
         socialTiktokUrl: null,
-        aiTone: null,
-        aiWritingStyle: null,
-        aiCustomInstructions: null,
+        aiTone: 'professional-friendly',
+        aiWritingStyle: 'persuasive',
+        aiCustomInstructions: 'Use South African English spelling (e.g., "favour" not "favor", "colour" not "color"). Always mention our free draft website offer. Focus on how a professional website can help grow their business. Be warm and genuine - never pushy or salesy. Reference The Tiny Web Factory as the company name and include our website link: https://thetinywebfactory.com',
         smtpHost: null,
         smtpPort: 587,
         smtpSecure: false,
@@ -106,6 +108,7 @@ export async function GET(_request: NextRequest) {
         imapSecure: true,
         imapUser: null,
         imapPass: null,
+        imapPollingIntervalMinutes: 0,
         updatedAt: new Date(),
       };
 

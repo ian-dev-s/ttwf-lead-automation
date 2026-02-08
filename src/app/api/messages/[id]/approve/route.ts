@@ -1,5 +1,6 @@
 import { auth } from '@/lib/auth';
 import { messageDoc, leadDoc, statusHistoryCollection } from '@/lib/firebase/collections';
+import { events } from '@/lib/events';
 import { NextRequest, NextResponse } from 'next/server';
 import { sendEmail } from '@/lib/email/send';
 import { renderLeadOutreachEmail } from '@/lib/email/templates/lead-outreach';
@@ -135,9 +136,18 @@ export async function POST(
       }
     }
 
+    // Notify about the approval result
+    const finalSnap = await messageDoc(teamId, id).get();
+    const finalStatus = finalSnap.data()?.status;
+    await events.messageApproved(id, {
+      businessName: lead.businessName,
+      email: lead.email,
+      status: finalStatus,
+      error: finalSnap.data()?.error,
+    }, teamId);
+
     // Return updated message
-    const updatedSnap = await messageDoc(teamId, id).get();
-    return NextResponse.json({ id, ...updatedSnap.data()!, lead });
+    return NextResponse.json({ id, ...finalSnap.data()!, lead });
   } catch (error) {
     console.error('Error approving message:', error);
     return NextResponse.json({ error: 'Failed to approve message' }, { status: 500 });

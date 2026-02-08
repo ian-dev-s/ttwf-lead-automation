@@ -127,9 +127,39 @@ export function getWhatsAppUrl(phone: string, message?: string): string {
   return `https://wa.me/${formattedPhone}${encodedMessage ? `?text=${encodedMessage}` : ''}`;
 }
 
+/**
+ * Convert any date-like value to a JavaScript Date.
+ * Handles: Date objects, ISO strings, timestamps, and Firestore Timestamp objects
+ * (both server-side with toDate() method and serialized { seconds, nanoseconds }).
+ */
+export function toJSDate(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  
+  // Firestore Timestamp with toDate() method (server-side)
+  if (typeof value === 'object' && value !== null && 'toDate' in value && typeof (value as { toDate: unknown }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate();
+  }
+  
+  // Serialized Firestore Timestamp { seconds: number, nanoseconds: number }
+  if (typeof value === 'object' && value !== null && 'seconds' in value && typeof (value as { seconds: unknown }).seconds === 'number') {
+    const ts = value as { seconds: number; nanoseconds?: number };
+    return new Date(ts.seconds * 1000 + (ts.nanoseconds || 0) / 1000000);
+  }
+  
+  // String or number
+  if (typeof value === 'string' || typeof value === 'number') {
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  
+  return null;
+}
+
 // Format date for display
-export function formatDate(date: Date | string): string {
-  const d = new Date(date);
+export function formatDate(date: unknown): string {
+  const d = toJSDate(date);
+  if (!d) return '';
   return d.toLocaleDateString('en-ZA', {
     year: 'numeric',
     month: 'short',
@@ -138,8 +168,9 @@ export function formatDate(date: Date | string): string {
 }
 
 // Format date with time
-export function formatDateTime(date: Date | string): string {
-  const d = new Date(date);
+export function formatDateTime(date: unknown): string {
+  const d = toJSDate(date);
+  if (!d) return '';
   return d.toLocaleDateString('en-ZA', {
     year: 'numeric',
     month: 'short',

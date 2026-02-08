@@ -1,10 +1,39 @@
 import { auth } from '@/lib/auth';
-import { leadsCollection, messagesCollection, stripUndefined } from '@/lib/firebase/collections';
+import { leadsCollection, messagesCollection, stripUndefined, toDate } from '@/lib/firebase/collections';
 import { events } from '@/lib/events';
 import { calculateLeadScore } from '@/lib/utils';
 import type { LeadStatus } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+
+/**
+ * Serialize Firestore data to plain JSON-safe objects.
+ * Converts Timestamps to ISO strings.
+ */
+function serializeForJson(data: Record<string, unknown>): Record<string, unknown> {
+  const serialized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value === null || value === undefined) {
+      serialized[key] = value;
+    } else if (
+      typeof value === 'object' &&
+      value !== null &&
+      'toDate' in value &&
+      typeof (value as { toDate: () => Date }).toDate === 'function'
+    ) {
+      // Firestore Timestamp -> ISO string
+      serialized[key] = toDate(value).toISOString();
+    } else if (value instanceof Date) {
+      serialized[key] = value.toISOString();
+    } else if (typeof value === 'object' && !Array.isArray(value)) {
+      // Recursively serialize nested objects
+      serialized[key] = serializeForJson(value as Record<string, unknown>);
+    } else {
+      serialized[key] = value;
+    }
+  }
+  return serialized;
+}
 
 // Validation schema for creating a lead
 const createLeadSchema = z.object({
@@ -94,9 +123,12 @@ export async function GET(request: NextRequest) {
           status: m.data().status,
         }));
 
+        // Serialize to plain JSON (converts Timestamps to ISO strings)
+        const serializedData = serializeForJson(data);
+
         return {
           id: doc.id,
-          ...data,
+          ...serializedData,
           messages,
           _count: { messages: messages.length },
         };
@@ -185,14 +217,16 @@ export async function POST(request: NextRequest) {
     const docRef = leadsCollection(teamId).doc();
     await docRef.set(leadData);
 
-    const lead = { id: docRef.id, ...leadData };
+    // Serialize to plain JSON for response
+    const serializedLead = serializeForJson(leadData);
+    const lead = { id: docRef.id, ...serializedLead };
 
-    // Publish real-time event
+    // Publish real-time event + external notifications
     await events.leadCreated({
-      id: lead.id,
-      businessName: lead.businessName,
-      status: lead.status,
-    });
+      id: docRef.id,
+      businessName: leadData.businessName,
+      status: leadData.status,
+    }, teamId);
 
     return NextResponse.json(lead, { status: 201 });
   } catch (error) {

@@ -193,6 +193,74 @@ Guidelines for the follow-up:
 - Format it as a professional HTML email with proper greeting and signature. Remember: Use HTML tags, NOT markdown.`;
 }
 
+// ─── Inbound Reply Prompts ─────────────────────────────────
+
+export const REPLY_SYSTEM_PROMPT = `You are a professional email assistant. Your task is to compose helpful, professional replies to incoming emails on behalf of the business.
+
+Your replies should:
+1. Be warm, professional, and directly address the questions or topics raised
+2. Reference specific details from the incoming email
+3. Be helpful and provide clear, actionable information
+4. Include a clear next step or call to action
+5. Be appropriately concise - match the length and tone of the incoming message
+
+Key guidelines:
+- Always be helpful and courteous
+- Answer questions directly
+- If the email asks about services, explain what you offer
+- If the email asks about pricing, provide general guidance or offer to discuss
+- For EMAIL messages: Use HTML formatting (NOT markdown). Use <p>, <br>, <strong>, <em>, <a href="..."> tags.
+- Do NOT use markdown syntax like **bold** or [link](url).`;
+
+/**
+ * Generate a user prompt for replying to an inbound email.
+ */
+export function generateReplyPrompt(params: {
+  fromName: string;
+  fromEmail: string;
+  subject: string;
+  bodyText: string;
+  leadContext?: {
+    businessName?: string;
+    industry?: string;
+    location?: string;
+  } | null;
+}): string {
+  const { fromName, fromEmail, subject, bodyText, leadContext } = params;
+
+  let contextSection = '';
+  if (leadContext) {
+    const details: string[] = [];
+    if (leadContext.businessName) details.push(`Business: ${leadContext.businessName}`);
+    if (leadContext.industry) details.push(`Industry: ${leadContext.industry}`);
+    if (leadContext.location) details.push(`Location: ${leadContext.location}`);
+    if (details.length > 0) {
+      contextSection = `\nKnown information about the sender:\n${details.join('\n')}\n`;
+    }
+  }
+
+  return `Write a professional reply to this incoming email.
+
+From: ${fromName} <${fromEmail}>
+Subject: ${subject}
+${contextSection}
+Email content:
+---
+${bodyText}
+---
+
+Include a subject line on the first line like "Subject: Re: ${subject}".
+IMPORTANT: Format the body using HTML tags (NOT markdown). Use:
+- <p>...</p> for paragraphs
+- <br> for line breaks within paragraphs
+- <strong>...</strong> for bold text
+- <em>...</em> for italic text
+- <a href="https://...">link text</a> for links
+Do NOT use markdown syntax like **bold** or [link](url).
+
+Write a helpful, professional reply that addresses the sender's questions or concerns. Format it as a proper HTML email with greeting and signature.`;
+}
+
 // Type for template data (replaces EmailTemplate from Prisma)
 interface EmailTemplateData {
   systemPrompt: string;
