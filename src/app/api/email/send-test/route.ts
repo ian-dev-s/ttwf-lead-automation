@@ -23,10 +23,10 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json().catch(() => ({}));
     const config = await getEmailConfig(teamId);
-    
+
     // Send to debug address, or the provided address, or the user's own email
     const testTo = config.debugAddress || body.to || session.user.email;
-    
+
     if (!testTo) {
       return NextResponse.json(
         { error: 'No recipient address available. Set EMAIL_DEBUG_ADDRESS or provide a "to" address.' },
@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
     }
 
     const branding = await getBrandingConfig(teamId);
-    
+
     const testHtml = renderLeadOutreachEmail({
       businessName: 'Test Business',
       recipientEmail: testTo,

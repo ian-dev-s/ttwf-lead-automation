@@ -1,6 +1,6 @@
-import { prisma } from '@/lib/db';
+import { adminAuth } from '@/lib/firebase/admin';
 import { encrypt } from '@/lib/crypto';
-import bcrypt from 'bcryptjs';
+import { teamsCollection, teamSettingsDoc, userDoc, emailTemplatesCollection, teamApiKeysCollection } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -9,10 +9,10 @@ const setupSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
   email: z.string().email('Invalid email address'),
   password: z.string().min(6, 'Password must be at least 6 characters'),
-  
+
   // Team
   teamName: z.string().min(2, 'Team name must be at least 2 characters'),
-  
+
   // Optional SMTP config
   smtpHost: z.string().optional(),
   smtpPort: z.number().optional(),
@@ -20,14 +20,14 @@ const setupSchema = z.object({
   smtpUser: z.string().optional(),
   smtpPass: z.string().optional(),
   emailFrom: z.string().optional(),
-  
+
   // Optional IMAP config
   imapHost: z.string().optional(),
   imapPort: z.number().optional(),
   imapSecure: z.boolean().optional(),
   imapUser: z.string().optional(),
   imapPass: z.string().optional(),
-  
+
   // Optional AI key
   aiProvider: z.string().optional(),
   aiApiKey: z.string().optional(),
@@ -36,8 +36,8 @@ const setupSchema = z.object({
 // GET /api/setup - Check if setup is needed
 export async function GET() {
   try {
-    const teamCount = await prisma.team.count();
-    return NextResponse.json({ needsSetup: teamCount === 0 });
+    const teamsSnapshot = await teamsCollection().limit(1).get();
+    return NextResponse.json({ needsSetup: teamsSnapshot.empty });
   } catch (error) {
     console.error('Error checking setup status:', error);
     return NextResponse.json({ needsSetup: true });
@@ -48,8 +48,8 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     // Only allow setup if no teams exist yet
-    const teamCount = await prisma.team.count();
-    if (teamCount > 0) {
+    const teamsSnapshot = await teamsCollection().limit(1).get();
+    if (!teamsSnapshot.empty) {
       return NextResponse.json(
         { error: 'Setup has already been completed. Please log in.' },
         { status: 403 }
@@ -65,39 +65,89 @@ export async function POST(request: NextRequest) {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
 
+    const now = new Date();
+
     // Create team
-    const team = await prisma.team.create({
-      data: {
-        name: data.teamName,
-        slug: slug || 'default',
-      },
+    const teamRef = teamsCollection().doc();
+    await teamRef.set({
+      name: data.teamName,
+      slug: slug || 'default',
+      createdAt: now,
+      updatedAt: now,
+    });
+    const teamId = teamRef.id;
+
+    // Create admin user in Firebase Auth
+    const userRecord = await adminAuth.createUser({
+      email: data.email,
+      password: data.password,
+      displayName: data.name,
     });
 
-    // Create admin user
-    const passwordHash = await bcrypt.hash(data.password, 12);
-    await prisma.user.create({
-      data: {
-        email: data.email,
-        name: data.name,
-        passwordHash,
-        role: 'ADMIN',
-        teamId: team.id,
-      },
+    // Set custom claims (teamId and role)
+    await adminAuth.setCustomUserClaims(userRecord.uid, {
+      role: 'ADMIN',
+      teamId,
+    });
+
+    // Create Firestore user document
+    await userDoc(userRecord.uid).set({
+      email: data.email,
+      name: data.name,
+      role: 'ADMIN',
+      teamId,
+      createdAt: now,
+      updatedAt: now,
     });
 
     // Create team settings with optional SMTP/IMAP
     const settingsData: Record<string, unknown> = {
-      teamId: team.id,
+      // Default values for required fields
+      dailyLeadTarget: 10,
+      leadGenerationEnabled: false,
+      scrapeDelayMs: 2000,
+      maxLeadsPerRun: 50,
+      searchRadiusKm: 25,
+      minGoogleRating: 4.0,
+      targetIndustries: [],
+      blacklistedIndustries: [],
+      targetCities: [],
+      autoGenerateMessages: false,
+      companyName: data.teamName,
+      companyWebsite: '',
+      companyTagline: '',
+      logoUrl: null,
+      bannerUrl: null,
+      whatsappPhone: null,
+      socialFacebookUrl: null,
+      socialInstagramUrl: null,
+      socialLinkedinUrl: null,
+      socialTwitterUrl: null,
+      socialTiktokUrl: null,
+      aiTone: null,
+      aiWritingStyle: null,
+      aiCustomInstructions: null,
+      smtpPort: 587,
+      smtpSecure: false,
+      emailDebugMode: false,
+      imapPort: 993,
+      imapSecure: true,
+      updatedAt: now,
     };
 
     // Encrypt and store SMTP config if provided
     if (data.smtpHost) {
       settingsData.smtpHost = data.smtpHost;
       settingsData.smtpPort = data.smtpPort || 587;
-      settingsData.smtpSecure = data.smtpSecure || false;
+      settingsData.smtpSecure = data.smtpSecure ?? false;
       if (data.smtpUser) settingsData.smtpUser = encrypt(data.smtpUser);
       if (data.smtpPass) settingsData.smtpPass = encrypt(data.smtpPass);
       if (data.emailFrom) settingsData.emailFrom = data.emailFrom;
+    } else {
+      settingsData.smtpHost = null;
+      settingsData.smtpUser = null;
+      settingsData.smtpPass = null;
+      settingsData.emailFrom = null;
     }
 
     // Encrypt and store IMAP config if provided
@@ -107,32 +157,34 @@ export async function POST(request: NextRequest) {
       settingsData.imapSecure = data.imapSecure !== false;
       if (data.imapUser) settingsData.imapUser = encrypt(data.imapUser);
       if (data.imapPass) settingsData.imapPass = encrypt(data.imapPass);
+    } else {
+      settingsData.imapHost = null;
+      settingsData.imapUser = null;
+      settingsData.imapPass = null;
     }
 
-    await prisma.teamSettings.create({
-      data: settingsData as Parameters<typeof prisma.teamSettings.create>[0]['data'],
-    });
+    await teamSettingsDoc(teamId).set(settingsData);
 
     // Store AI API key if provided
     if (data.aiProvider && data.aiApiKey) {
-      await prisma.teamApiKey.create({
-        data: {
-          teamId: team.id,
-          provider: data.aiProvider,
-          encryptedKey: encrypt(data.aiApiKey),
-          label: `${data.aiProvider} API Key`,
-          isActive: true,
-        },
+      const apiKeyRef = teamApiKeysCollection(teamId).doc();
+      await apiKeyRef.set({
+        provider: data.aiProvider,
+        encryptedKey: encrypt(data.aiApiKey),
+        label: `${data.aiProvider} API Key`,
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
       });
     }
 
     // Seed default email templates for this team
-    await seedDefaultTemplates(team.id);
+    await seedDefaultTemplates(teamId, now);
 
     return NextResponse.json({
       success: true,
       message: 'Setup completed successfully! You can now log in.',
-      teamId: team.id,
+      teamId,
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -149,10 +201,9 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function seedDefaultTemplates(teamId: string) {
+async function seedDefaultTemplates(teamId: string, now: Date) {
   const templates = [
     {
-      teamId,
       name: 'Initial Outreach',
       description: 'First contact email to businesses without a website or with a low-quality website',
       purpose: 'outreach',
@@ -179,9 +230,10 @@ Key guidelines:
       maxLength: 2000,
       mustInclude: ['free draft', 'no obligation'],
       avoidTopics: ['competitor names', 'pricing details', 'negative comments about current website'],
+      createdAt: now,
+      updatedAt: now,
     },
     {
-      teamId,
       name: 'Friendly Follow-up',
       description: 'Follow-up email for businesses that have not responded to the initial outreach',
       purpose: 'follow_up',
@@ -202,9 +254,10 @@ Guidelines:
       maxLength: 1000,
       mustInclude: ['free draft'],
       avoidTopics: ['competitor names', 'pricing details', 'guilt-tripping'],
+      createdAt: now,
+      updatedAt: now,
     },
     {
-      teamId,
       name: 'Re-engagement',
       description: 'Re-engage businesses that showed initial interest but went cold',
       purpose: 're_engagement',
@@ -224,10 +277,13 @@ Guidelines:
       maxLength: 800,
       mustInclude: [],
       avoidTopics: ['competitor names', 'pricing details', 'pressure tactics'],
+      createdAt: now,
+      updatedAt: now,
     },
   ];
 
   for (const template of templates) {
-    await prisma.emailTemplate.create({ data: template });
+    const templateRef = emailTemplatesCollection(teamId).doc();
+    await templateRef.set(template);
   }
 }

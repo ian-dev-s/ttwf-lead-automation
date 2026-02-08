@@ -1,43 +1,30 @@
-import { prisma } from '@/lib/db';
+import { teamSettingsDoc } from '@/lib/firebase/collections';
 import { BrandingConfig, DEFAULT_BRANDING } from './templates/lead-outreach';
 
 /**
- * Fetches branding configuration from TeamSettings.
+ * Fetches branding configuration from TeamSettings in Firestore.
  * Falls back to DEFAULT_BRANDING for any missing fields.
  */
 export async function getBrandingConfig(teamId: string): Promise<BrandingConfig> {
-  const settings = await prisma.teamSettings.findUnique({
-    where: { teamId },
-    select: {
-      companyName: true,
-      companyWebsite: true,
-      companyTagline: true,
-      logoUrl: true,
-      bannerUrl: true,
-      whatsappPhone: true,
-      socialFacebookUrl: true,
-      socialInstagramUrl: true,
-      socialLinkedinUrl: true,
-      socialTwitterUrl: true,
-      socialTiktokUrl: true,
-    },
-  });
+  const settingsSnap = await teamSettingsDoc(teamId).get();
 
-  if (!settings) {
+  if (!settingsSnap.exists) {
     return DEFAULT_BRANDING;
   }
+
+  const settings = settingsSnap.data()!;
 
   return {
     companyName: settings.companyName || DEFAULT_BRANDING.companyName,
     companyWebsite: settings.companyWebsite || DEFAULT_BRANDING.companyWebsite,
     companyTagline: settings.companyTagline || DEFAULT_BRANDING.companyTagline,
-    logoUrl: settings.logoUrl,
-    bannerUrl: settings.bannerUrl,
+    logoUrl: settings.logoUrl ?? null,
+    bannerUrl: settings.bannerUrl ?? null,
     whatsappPhone: settings.whatsappPhone || DEFAULT_BRANDING.whatsappPhone,
-    socialFacebookUrl: settings.socialFacebookUrl,
-    socialInstagramUrl: settings.socialInstagramUrl,
-    socialLinkedinUrl: settings.socialLinkedinUrl,
-    socialTwitterUrl: settings.socialTwitterUrl,
-    socialTiktokUrl: settings.socialTiktokUrl,
+    socialFacebookUrl: settings.socialFacebookUrl ?? null,
+    socialInstagramUrl: settings.socialInstagramUrl ?? null,
+    socialLinkedinUrl: settings.socialLinkedinUrl ?? null,
+    socialTwitterUrl: settings.socialTwitterUrl ?? null,
+    socialTiktokUrl: settings.socialTiktokUrl ?? null,
   };
 }

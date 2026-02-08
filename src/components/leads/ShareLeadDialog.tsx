@@ -16,7 +16,7 @@ import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { formatPhoneNumber } from '@/lib/utils';
-import { Contact } from '@prisma/client';
+import { Contact } from '@/types';
 import {
   Check,
   Copy,

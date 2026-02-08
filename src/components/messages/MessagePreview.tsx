@@ -19,7 +19,7 @@ import {
     TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { formatDateTime } from '@/lib/utils';
-import { Lead, Message } from '@prisma/client';
+import { Lead, Message } from '@/types';
 import {
     Bot,
     Check,

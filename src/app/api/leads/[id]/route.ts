@@ -1,10 +1,12 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { leadDoc, messagesCollection, statusHistoryCollection, stripUndefined } from '@/lib/firebase/collections';
 import { events } from '@/lib/events';
 import { calculateLeadScore } from '@/lib/utils';
-import { LeadStatus } from '@prisma/client';
+import { LeadStatus } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+
+const LEAD_STATUS_VALUES = Object.values(LeadStatus) as [string, ...string[]];
 
 // Validation schema for updating a lead
 const updateLeadSchema = z.object({
@@ -20,7 +22,7 @@ const updateLeadSchema = z.object({
   websiteQuality: z.number().min(0).max(100).optional(),
   googleRating: z.number().min(0).max(5).optional(),
   reviewCount: z.number().min(0).optional(),
-  status: z.nativeEnum(LeadStatus).optional(),
+  status: z.enum(LEAD_STATUS_VALUES).optional(),
   notes: z.string().optional(),
 });
 
@@ -36,34 +38,35 @@ export async function GET(
     }
 
     const teamId = session.user.teamId;
-
     const { id } = await params;
 
-    const lead = await prisma.lead.findFirst({
-      where: { id, teamId },
-      include: {
-        messages: {
-          orderBy: { createdAt: 'desc' },
-        },
-        statusHistory: {
-          orderBy: { changedAt: 'desc' },
-          include: {
-            changedBy: {
-              select: { name: true, email: true },
-            },
-          },
-        },
-        createdBy: {
-          select: { name: true, email: true },
-        },
-      },
-    });
-
-    if (!lead) {
+    const leadSnap = await leadDoc(teamId, id).get();
+    if (!leadSnap.exists) {
       return NextResponse.json({ error: 'Lead not found' }, { status: 404 });
     }
 
-    return NextResponse.json(lead);
+    const leadData = leadSnap.data()!;
+
+    // Get messages
+    const msgSnapshot = await messagesCollection(teamId)
+      .where('leadId', '==', id)
+      .orderBy('createdAt', 'desc')
+      .get();
+    const messages = msgSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    // Get status history
+    const histSnapshot = await statusHistoryCollection(teamId)
+      .where('leadId', '==', id)
+      .orderBy('changedAt', 'desc')
+      .get();
+    const statusHistory = histSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    return NextResponse.json({
+      id,
+      ...leadData,
+      messages,
+      statusHistory,
+    });
   } catch (error) {
     console.error('Error fetching lead:', error);
     return NextResponse.json(
@@ -97,47 +100,36 @@ export async function PATCH(
     const body = await request.json();
     const validatedData = updateLeadSchema.parse(body);
 
-    // Get current lead for status tracking
-    const currentLead = await prisma.lead.findFirst({
-      where: { id, teamId },
-    });
-
-    if (!currentLead) {
+    // Get current lead
+    const leadSnap = await leadDoc(teamId, id).get();
+    if (!leadSnap.exists) {
       return NextResponse.json({ error: 'Lead not found' }, { status: 404 });
     }
+    const currentLead = { id, ...leadSnap.data()! };
 
-    // Prepare update data - only include fields that were explicitly provided
-    const updateData: any = { ...validatedData };
-    
-    // Only set these fields to null if they were explicitly provided as empty strings
-    // (not if they were simply not included in the request)
-    if ('email' in body) {
-      updateData.email = validatedData.email || null;
+    // Build update data
+    const updateData: Record<string, unknown> = { ...validatedData, updatedAt: new Date() };
+
+    // Handle nullable fields
+    if ('email' in body) updateData.email = validatedData.email || null;
+    if ('facebookUrl' in body) updateData.facebookUrl = validatedData.facebookUrl || null;
+    if ('googleMapsUrl' in body) updateData.googleMapsUrl = validatedData.googleMapsUrl || null;
+    if ('website' in body) updateData.website = validatedData.website || null;
+    if ('phone' in body) updateData.phone = validatedData.phone || null;
+
+    // Update lowercase search fields
+    if (validatedData.businessName) {
+      updateData.businessNameLower = validatedData.businessName.toLowerCase();
     }
-    if ('facebookUrl' in body) {
-      updateData.facebookUrl = validatedData.facebookUrl || null;
-    }
-    if ('googleMapsUrl' in body) {
-      updateData.googleMapsUrl = validatedData.googleMapsUrl || null;
-    }
-    if ('website' in body) {
-      updateData.website = validatedData.website || null;
-    }
-    if ('phone' in body) {
-      updateData.phone = validatedData.phone || null;
+    if (validatedData.location) {
+      updateData.locationLower = validatedData.location.toLowerCase();
     }
 
     // Recalculate score if relevant fields changed
     if (
-      'website' in body ||
-      'websiteQuality' in body ||
-      'googleRating' in body ||
-      'reviewCount' in body ||
-      'phone' in body ||
-      'email' in body ||
-      'facebookUrl' in body
+      'website' in body || 'websiteQuality' in body || 'googleRating' in body ||
+      'reviewCount' in body || 'phone' in body || 'email' in body || 'facebookUrl' in body
     ) {
-      // Use the new value if provided, otherwise fall back to current lead value
       const newWebsite = 'website' in body ? updateData.website : currentLead.website;
       const newWebsiteQuality = 'websiteQuality' in body ? updateData.websiteQuality : currentLead.websiteQuality;
       const newPhone = 'phone' in body ? updateData.phone : currentLead.phone;
@@ -148,9 +140,9 @@ export async function PATCH(
 
       updateData.score = calculateLeadScore({
         hasNoWebsite: !newWebsite,
-        hasLowQualityWebsite: !!newWebsite && (newWebsiteQuality || 0) < 50,
-        googleRating: newGoogleRating,
-        reviewCount: newReviewCount,
+        hasLowQualityWebsite: !!newWebsite && ((newWebsiteQuality as number) || 0) < 50,
+        googleRating: newGoogleRating as number | null,
+        reviewCount: newReviewCount as number | null,
         hasFacebook: !!newFacebookUrl,
         hasPhone: !!newPhone,
         hasEmail: !!newEmail,
@@ -159,15 +151,13 @@ export async function PATCH(
 
     // Track status change
     if (validatedData.status && validatedData.status !== currentLead.status) {
-      // Get messages to validate status change
-      const messages = await prisma.message.findMany({
-        where: { leadId: id, teamId },
-      });
+      // Validate: must have a message before changing from NEW
+      const msgSnapshot = await messagesCollection(teamId)
+        .where('leadId', '==', id)
+        .limit(1)
+        .get();
+      const hasMessages = !msgSnapshot.empty;
 
-      const hasMessages = messages.length > 0;
-      const hasEmailMessage = messages.some(m => m.type === 'EMAIL');
-
-      // VALIDATION: A lead cannot have any status other than NEW without a message
       if (!hasMessages && validatedData.status !== 'NEW' && validatedData.status !== 'REJECTED' && validatedData.status !== 'INVALID') {
         return NextResponse.json(
           { error: 'A lead must have at least one message before changing status from NEW' },
@@ -175,51 +165,62 @@ export async function PATCH(
         );
       }
 
-      // VALIDATION: A lead must have an EMAIL message to be QUALIFIED
-      if (validatedData.status === 'QUALIFIED' && !hasEmailMessage) {
-        return NextResponse.json(
-          { error: 'A lead must have an email message to be qualified' },
-          { status: 400 }
-        );
+      // Validate: must have EMAIL message to be QUALIFIED
+      if (validatedData.status === 'QUALIFIED') {
+        const emailMsgSnapshot = await messagesCollection(teamId)
+          .where('leadId', '==', id)
+          .where('type', '==', 'EMAIL')
+          .limit(1)
+          .get();
+        if (emailMsgSnapshot.empty) {
+          return NextResponse.json(
+            { error: 'A lead must have an email message to be qualified' },
+            { status: 400 }
+          );
+        }
       }
 
-      await prisma.statusHistory.create({
-        data: {
-          leadId: id,
-          fromStatus: currentLead.status,
-          toStatus: validatedData.status,
-          changedById: session.user.id,
-          teamId,
-        },
+      // Create status history entry
+      await statusHistoryCollection(teamId).add({
+        leadId: id,
+        fromStatus: currentLead.status,
+        toStatus: validatedData.status,
+        changedById: session.user.id,
+        changedAt: new Date(),
+        notes: null,
       });
 
-      // Update contacted timestamp if moving to CONTACTED
       if (validatedData.status === 'CONTACTED') {
         updateData.contactedAt = new Date();
       }
     }
 
-    const lead = await prisma.lead.update({
-      where: { id },
-      data: updateData,
-      include: {
-        messages: true,
-      },
-    });
+    // Update the lead
+    await leadDoc(teamId, id).update(stripUndefined(updateData as any));
 
-    // Publish real-time event
+    // Fetch updated lead with messages
+    const updatedSnap = await leadDoc(teamId, id).get();
+    const updatedData = updatedSnap.data()!;
+    const msgSnap2 = await messagesCollection(teamId)
+      .where('leadId', '==', id)
+      .get();
+    const messages = msgSnap2.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    const lead = { id, ...updatedData, messages };
+
+    // Publish events
     if (validatedData.status && validatedData.status !== currentLead.status) {
       await events.leadStatusChanged({
         id: lead.id,
-        businessName: lead.businessName,
-        status: lead.status,
+        businessName: lead.businessName as string,
+        status: lead.status as string,
         previousStatus: currentLead.status,
       });
     } else {
       await events.leadUpdated({
         id: lead.id,
-        businessName: lead.businessName,
-        status: lead.status,
+        businessName: lead.businessName as string,
+        status: lead.status as string,
       });
     }
 
@@ -252,7 +253,6 @@ export async function DELETE(
 
     const teamId = session.user.teamId;
 
-    // Only admins can delete
     if (session.user.role !== 'ADMIN') {
       return NextResponse.json(
         { error: 'Only administrators can delete leads' },
@@ -262,20 +262,13 @@ export async function DELETE(
 
     const { id } = await params;
 
-    // Verify the lead belongs to the team before deleting
-    const lead = await prisma.lead.findFirst({
-      where: { id, teamId },
-    });
-
-    if (!lead) {
+    const leadSnap = await leadDoc(teamId, id).get();
+    if (!leadSnap.exists) {
       return NextResponse.json({ error: 'Lead not found' }, { status: 404 });
     }
 
-    await prisma.lead.delete({
-      where: { id },
-    });
+    await leadDoc(teamId, id).delete();
 
-    // Publish real-time event
     await events.leadDeleted(id);
 
     return NextResponse.json({ success: true });

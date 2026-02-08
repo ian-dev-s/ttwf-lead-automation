@@ -2,7 +2,7 @@
 
 import { cn } from '@/lib/utils';
 import { Droppable } from '@hello-pangea/dnd';
-import { Lead, LeadStatus } from '@prisma/client';
+import { Lead, LeadStatus } from '@/types';
 import { LeadCard } from './LeadCard';
 
 interface LeadMessage {

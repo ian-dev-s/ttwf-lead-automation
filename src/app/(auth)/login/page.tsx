@@ -4,8 +4,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { clientAuth } from '@/lib/firebase/client';
 import { Loader2 } from 'lucide-react';
-import { signIn } from 'next-auth/react';
+import { signInWithEmailAndPassword } from 'firebase/auth';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
@@ -54,25 +55,43 @@ function LoginForm() {
     setError(null);
     setIsLoading(true);
 
-    // Read values directly from DOM to support browser automation
     const email = emailRef.current?.value || '';
     const password = passwordRef.current?.value || '';
 
     try {
-      const result = await signIn('credentials', {
+      // Sign in with Firebase Auth (client SDK)
+      const userCredential = await signInWithEmailAndPassword(
+        clientAuth,
         email,
-        password,
-        redirect: false,
+        password
+      );
+
+      // Get the ID token
+      const idToken = await userCredential.user.getIdToken();
+
+      // Create a server-side session cookie
+      const res = await fetch('/api/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
       });
 
-      if (result?.error) {
+      if (!res.ok) {
+        throw new Error('Failed to create session');
+      }
+
+      router.push(callbackUrl);
+      router.refresh();
+    } catch (err: any) {
+      if (
+        err?.code === 'auth/user-not-found' ||
+        err?.code === 'auth/wrong-password' ||
+        err?.code === 'auth/invalid-credential'
+      ) {
         setError('Invalid email or password');
       } else {
-        router.push(callbackUrl);
-        router.refresh();
+        setError('An error occurred. Please try again.');
       }
-    } catch {
-      setError('An error occurred. Please try again.');
     } finally {
       setIsLoading(false);
     }

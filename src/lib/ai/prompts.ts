@@ -1,4 +1,4 @@
-import { Lead, EmailTemplate } from '@prisma/client';
+import type { Lead } from '@/types';
 
 // System prompt for message personalization
 export const MESSAGE_SYSTEM_PROMPT = `You are an expert copywriter for The Tiny Web Factory, a web design agency that helps South African businesses establish their online presence.
@@ -193,8 +193,18 @@ Guidelines for the follow-up:
 - Format it as a professional HTML email with proper greeting and signature. Remember: Use HTML tags, NOT markdown.`;
 }
 
+// Type for template data (replaces EmailTemplate from Prisma)
+interface EmailTemplateData {
+  systemPrompt: string;
+  tone?: string | null;
+  maxLength?: number | null;
+  mustInclude?: string[];
+  avoidTopics?: string[];
+  bodyTemplate?: string | null;
+}
+
 // Build system prompt from EmailTemplate
-export function buildSystemPromptFromTemplate(template: EmailTemplate): string {
+export function buildSystemPromptFromTemplate(template: EmailTemplateData): string {
   let systemPrompt = template.systemPrompt;
   
   // Add guardrails from template fields
@@ -229,7 +239,7 @@ export function buildSystemPromptFromTemplate(template: EmailTemplate): string {
 
 // Enhanced system prompt that incorporates AI training data
 export function buildEnhancedSystemPrompt(
-  template: EmailTemplate | null,
+  template: EmailTemplateData | null,
   training: {
     aiTone?: string | null;
     aiWritingStyle?: string | null;

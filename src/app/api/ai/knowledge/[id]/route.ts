@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { aiKnowledgeItemDoc, serverTimestamp, stripUndefined } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -22,11 +22,18 @@ export async function GET(
 
     const { id } = await params;
     const teamId = session.user.teamId;
-    const item = await prisma.aIKnowledgeItem.findFirst({ where: { id, teamId } });
+    
+    const docRef = aiKnowledgeItemDoc(teamId, id);
+    const docSnap = await docRef.get();
 
-    if (!item) {
+    if (!docSnap.exists) {
       return NextResponse.json({ error: 'Knowledge item not found' }, { status: 404 });
     }
+
+    const item = {
+      id: docSnap.id,
+      ...docSnap.data(),
+    };
 
     return NextResponse.json(item);
   } catch (error) {
@@ -54,18 +61,25 @@ export async function PATCH(
     const body = await request.json();
     const data = updateKnowledgeSchema.parse(body);
 
-    const existingItem = await prisma.aIKnowledgeItem.findFirst({
-      where: { id, teamId },
-    });
+    const docRef = aiKnowledgeItemDoc(teamId, id);
+    const docSnap = await docRef.get();
 
-    if (!existingItem) {
+    if (!docSnap.exists) {
       return NextResponse.json({ error: 'Knowledge item not found' }, { status: 404 });
     }
 
-    const item = await prisma.aIKnowledgeItem.update({
-      where: { id },
-      data,
+    const updatePayload = stripUndefined({
+      ...data,
+      updatedAt: serverTimestamp(),
     });
+
+    await docRef.update(updatePayload);
+
+    const updatedDoc = await docRef.get();
+    const item = {
+      id: updatedDoc.id,
+      ...updatedDoc.data(),
+    };
 
     return NextResponse.json(item);
   } catch (error) {
@@ -94,15 +108,14 @@ export async function DELETE(
     const { id } = await params;
     const teamId = session.user.teamId;
 
-    const existingItem = await prisma.aIKnowledgeItem.findFirst({
-      where: { id, teamId },
-    });
+    const docRef = aiKnowledgeItemDoc(teamId, id);
+    const docSnap = await docRef.get();
 
-    if (!existingItem) {
+    if (!docSnap.exists) {
       return NextResponse.json({ error: 'Knowledge item not found' }, { status: 404 });
     }
 
-    await prisma.aIKnowledgeItem.delete({ where: { id } });
+    await docRef.delete();
 
     return NextResponse.json({ success: true });
   } catch (error) {

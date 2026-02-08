@@ -1,19 +1,124 @@
-import {
-    AIProvider,
-    JobStatus,
-    Lead,
-    LeadStatus,
-    Message,
-    MessageStatus,
-    MessageType,
-    User,
-    UserRole
-} from '@prisma/client';
+// ─── Enums (previously from @prisma/client) ───────────────
 
-// Re-export Prisma enums
-export { AIProvider, JobStatus, LeadStatus, MessageStatus, MessageType, UserRole };
+export const UserRole = {
+  ADMIN: 'ADMIN',
+  USER: 'USER',
+  VIEWER: 'VIEWER',
+} as const;
+export type UserRole = (typeof UserRole)[keyof typeof UserRole];
 
-// Extended Lead type with relations
+export const LeadStatus = {
+  NEW: 'NEW',
+  QUALIFIED: 'QUALIFIED',
+  MESSAGE_READY: 'MESSAGE_READY',
+  PENDING_APPROVAL: 'PENDING_APPROVAL',
+  CONTACTED: 'CONTACTED',
+  RESPONDED: 'RESPONDED',
+  CONVERTED: 'CONVERTED',
+  NOT_INTERESTED: 'NOT_INTERESTED',
+  REJECTED: 'REJECTED',
+  INVALID: 'INVALID',
+} as const;
+export type LeadStatus = (typeof LeadStatus)[keyof typeof LeadStatus];
+
+export const MessageType = {
+  WHATSAPP: 'WHATSAPP',
+  EMAIL: 'EMAIL',
+} as const;
+export type MessageType = (typeof MessageType)[keyof typeof MessageType];
+
+export const MessageStatus = {
+  DRAFT: 'DRAFT',
+  PENDING_APPROVAL: 'PENDING_APPROVAL',
+  APPROVED: 'APPROVED',
+  SENT: 'SENT',
+  FAILED: 'FAILED',
+} as const;
+export type MessageStatus = (typeof MessageStatus)[keyof typeof MessageStatus];
+
+export const AIProvider = {
+  OPENAI: 'OPENAI',
+  ANTHROPIC: 'ANTHROPIC',
+  GOOGLE: 'GOOGLE',
+  GITHUB: 'GITHUB',
+  CURSOR: 'CURSOR',
+} as const;
+export type AIProvider = (typeof AIProvider)[keyof typeof AIProvider];
+
+export const JobStatus = {
+  SCHEDULED: 'SCHEDULED',
+  RUNNING: 'RUNNING',
+  COMPLETED: 'COMPLETED',
+  FAILED: 'FAILED',
+  CANCELLED: 'CANCELLED',
+} as const;
+export type JobStatus = (typeof JobStatus)[keyof typeof JobStatus];
+
+// ─── Document types (used across the app) ──────────────────
+
+/** A Lead document with its Firestore id */
+export interface Lead {
+  id: string;
+  businessName: string;
+  businessNameLower: string;
+  industry: string | null;
+  location: string;
+  locationLower: string;
+  country: string;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  facebookUrl: string | null;
+  instagramUrl: string | null;
+  twitterUrl: string | null;
+  linkedinUrl: string | null;
+  googleMapsUrl: string | null;
+  website: string | null;
+  websiteQuality: number | null;
+  googleRating: number | null;
+  reviewCount: number | null;
+  description: string | null;
+  status: LeadStatus;
+  source: string | null;
+  score: number;
+  notes: string | null;
+  metadata: Record<string, unknown> | null;
+  createdById: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  contactedAt: Date | null;
+}
+
+/** A Message document with its Firestore id */
+export interface Message {
+  id: string;
+  leadId: string;
+  type: MessageType;
+  subject: string | null;
+  content: string;
+  status: MessageStatus;
+  sentAt: Date | null;
+  error: string | null;
+  generatedBy: string | null;
+  aiProvider: string | null;
+  aiModel: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** A User document with its Firestore id */
+export interface User {
+  id: string;
+  email: string;
+  name: string | null;
+  role: UserRole;
+  teamId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ─── Extended types with relations ─────────────────────────
+
 export interface LeadWithRelations extends Lead {
   messages?: Message[];
   createdBy?: User | null;
@@ -24,7 +129,7 @@ export interface CreateLeadInput {
   businessName: string;
   industry?: string;
   location: string;
-  country?: string; // Country code (e.g., "ZA" for South Africa)
+  country?: string;
   address?: string;
   phone?: string;
   email?: string;
@@ -67,6 +172,31 @@ export interface MessageWithLead extends Message {
   lead: Lead;
 }
 
+/** A Contact document with its Firestore id */
+export interface Contact {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  telegramId: string | null;
+  notes: string | null;
+  isFavorite: boolean;
+  createdById: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** A StatusHistory document with its Firestore id */
+export interface StatusHistory {
+  id: string;
+  leadId: string;
+  fromStatus: LeadStatus;
+  toStatus: LeadStatus;
+  changedById: string | null;
+  changedAt: Date;
+  notes: string | null;
+}
+
 // Kanban board column
 export interface KanbanColumn {
   id: LeadStatus;
@@ -87,7 +217,7 @@ export interface AIProviderConfig {
 export interface ScrapingParams {
   query: string;
   location: string;
-  country?: string; // Country code (e.g., "ZA" for South Africa)
+  country?: string;
   category?: string;
   minRating?: number;
   maxResults?: number;
@@ -98,7 +228,7 @@ export interface ScrapingParams {
 export interface ScrapedBusiness {
   name: string;
   address: string;
-  country?: string; // Country code where business was found
+  country?: string;
   phone?: string;
   website?: string;
   rating?: number;
@@ -158,13 +288,14 @@ export interface TeamSettingsInput {
   autoGenerateMessages?: boolean;
 }
 
-// Session user type for NextAuth
+// Session user type
 export interface SessionUser {
   id: string;
   email: string;
   name: string | null;
   role: UserRole;
-  image: string | null;
+  teamId: string;
+  image?: string | null;
 }
 
 // Auth types

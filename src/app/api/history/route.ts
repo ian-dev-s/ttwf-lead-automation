@@ -1,5 +1,6 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { analyzedBusinessesCollection } from '@/lib/firebase/collections';
+import { adminDb } from '@/lib/firebase/admin';
 import { NextRequest, NextResponse } from 'next/server';
 
 // GET /api/history - Get analyzed businesses history
@@ -16,53 +17,59 @@ export async function GET(request: NextRequest) {
     const page = parseInt(searchParams.get('page') || '1');
     const limit = parseInt(searchParams.get('limit') || '50');
     const filter = searchParams.get('filter') || 'all'; // 'all', 'prospects', 'skipped', 'converted'
-    const search = searchParams.get('search') || '';
 
     const skip = (page - 1) * limit;
 
-    // Build where clause based on filters
-    const where: any = { teamId };
-    
-    if (filter === 'prospects') {
-      where.isGoodProspect = true;
-      where.wasConverted = false;
-    } else if (filter === 'skipped') {
-      where.isGoodProspect = false;
-    } else if (filter === 'converted') {
-      where.wasConverted = true;
-    }
+    // Build query based on filters
+    let query: FirebaseFirestore.Query<any> = analyzedBusinessesCollection(teamId);
 
-    if (search) {
-      where.OR = [
-        { businessName: { contains: search, mode: 'insensitive' } },
-        { location: { contains: search, mode: 'insensitive' } },
-        { category: { contains: search, mode: 'insensitive' } },
-      ];
+    if (filter === 'prospects') {
+      query = query.where('isGoodProspect', '==', true).where('wasConverted', '==', false);
+    } else if (filter === 'skipped') {
+      query = query.where('isGoodProspect', '==', false);
+    } else if (filter === 'converted') {
+      query = query.where('wasConverted', '==', true);
     }
 
     // Get total count for pagination
-    const totalCount = await prisma.analyzedBusiness.count({ where });
+    const countSnapshot = await query.count().get();
+    const totalCount = countSnapshot.data().count;
 
-    // Get analyzed businesses
-    const businesses = await prisma.analyzedBusiness.findMany({
-      where,
-      orderBy: { analyzedAt: 'desc' },
-      skip,
-      take: limit,
-    });
+    // Apply pagination and ordering
+    query = query.orderBy('analyzedAt', 'desc').offset(skip).limit(limit);
 
-    // Get statistics
-    const stats = await prisma.analyzedBusiness.groupBy({
-      where: { teamId },
-      by: ['isGoodProspect', 'wasConverted'],
-      _count: true,
+    const snapshot = await query.get();
+    const businesses = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    // Get statistics by fetching all docs and reducing in memory
+    const allBusinessesSnapshot = await analyzedBusinessesCollection(teamId).get();
+    let total = 0;
+    let prospects = 0;
+    let skipped = 0;
+    let converted = 0;
+
+    allBusinessesSnapshot.docs.forEach((doc) => {
+      const data = doc.data();
+      total++;
+      if (data.isGoodProspect && !data.wasConverted) {
+        prospects++;
+      }
+      if (!data.isGoodProspect) {
+        skipped++;
+      }
+      if (data.wasConverted) {
+        converted++;
+      }
     });
 
     const statistics = {
-      total: totalCount,
-      prospects: stats.filter(s => s.isGoodProspect && !s.wasConverted).reduce((sum, s) => sum + s._count, 0),
-      skipped: stats.filter(s => !s.isGoodProspect).reduce((sum, s) => sum + s._count, 0),
-      converted: stats.filter(s => s.wasConverted).reduce((sum, s) => sum + s._count, 0),
+      total,
+      prospects,
+      skipped,
+      converted,
     };
 
     return NextResponse.json({
@@ -97,19 +104,37 @@ export async function DELETE(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const olderThan = searchParams.get('olderThan'); // Days
 
-    const where: Record<string, unknown> = { teamId };
-    
+    let query: FirebaseFirestore.Query<any> = analyzedBusinessesCollection(teamId);
+
     if (olderThan) {
       const daysAgo = new Date();
       daysAgo.setDate(daysAgo.getDate() - parseInt(olderThan));
-      where.analyzedAt = { lt: daysAgo };
+      query = query.where('analyzedAt', '<', daysAgo);
     }
 
-    const deleted = await prisma.analyzedBusiness.deleteMany({ where });
+    // Firestore doesn't have deleteMany, so we need to fetch and delete in batches
+    const snapshot = await query.get();
+    let deletedCount = 0;
+
+    // Process in batches of 500 (Firestore batch limit)
+    const batchSize = 500;
+    const docs = snapshot.docs;
+    
+    for (let i = 0; i < docs.length; i += batchSize) {
+      const batch = adminDb.batch();
+      const batchDocs = docs.slice(i, i + batchSize);
+      
+      batchDocs.forEach((doc) => {
+        batch.delete(doc.ref);
+        deletedCount++;
+      });
+
+      await batch.commit();
+    }
 
     return NextResponse.json({
       success: true,
-      deletedCount: deleted.count,
+      deletedCount,
     });
   } catch (error) {
     console.error('Error clearing history:', error);

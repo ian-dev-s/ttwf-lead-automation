@@ -1,6 +1,6 @@
-import { Lead } from '@prisma/client';
+import type { Lead } from '@/types';
 import { generateText } from 'ai';
-import { prisma } from '../db';
+import { aiConfigsCollection, aiConfigDoc, emailTemplatesCollection, teamSettingsDoc, aiKnowledgeItemsCollection, aiSampleResponsesCollection, leadDoc, messagesCollection, messageDoc } from '@/lib/firebase/collections';
 import { MESSAGE_SYSTEM_PROMPT, generateMessagePrompt, generateFollowUpPrompt, getGuardrailsPrompt, buildEnhancedSystemPrompt } from './prompts';
 import { defaultModel, getLanguageModel, type SimpleProvider } from './providers';
 
@@ -43,54 +43,63 @@ export async function generatePersonalizedMessage(
     previousMessage,
   } = options;
 
-  // Get the active AI config from database (team-scoped), or use defaults
-  const activeConfig = await prisma.aIConfig.findFirst({
-    where: { teamId, isActive: true },
-  });
+  // Get the active AI config from Firestore (team-scoped), or use defaults
+  const activeConfigSnap = await aiConfigsCollection(teamId)
+    .where('isActive', '==', true)
+    .limit(1)
+    .get();
+
+  const activeConfig = activeConfigSnap.empty
+    ? null
+    : { id: activeConfigSnap.docs[0].id, ...activeConfigSnap.docs[0].data() };
 
   const finalProvider = (activeConfig?.provider || provider) as SimpleProvider;
   const finalModel = activeConfig?.model || model || defaultModel;
   const finalTemperature = activeConfig?.temperature ?? temperature;
   const finalMaxTokens = activeConfig?.maxTokens ?? maxTokens;
 
-  // Look up email template from database (team-scoped)
+  // Look up email template from Firestore (team-scoped)
   let systemPrompt = MESSAGE_SYSTEM_PROMPT;
   let templateGuardrails = guardrails;
-  
-  const template = await prisma.emailTemplate.findFirst({
-    where: {
-      teamId,
-      purpose: templatePurpose,
-      isActive: true,
-      isDefault: true,
-    },
-  }) || await prisma.emailTemplate.findFirst({
-    where: {
-      teamId,
-      purpose: templatePurpose,
-      isActive: true,
-    },
-  });
+
+  // Try default active template first, then any active template
+  const defaultTemplateSnap = await emailTemplatesCollection(teamId)
+    .where('purpose', '==', templatePurpose)
+    .where('isActive', '==', true)
+    .where('isDefault', '==', true)
+    .limit(1)
+    .get();
+
+  let template: any = null;
+  if (!defaultTemplateSnap.empty) {
+    template = { id: defaultTemplateSnap.docs[0].id, ...defaultTemplateSnap.docs[0].data() };
+  } else {
+    const anyTemplateSnap = await emailTemplatesCollection(teamId)
+      .where('purpose', '==', templatePurpose)
+      .where('isActive', '==', true)
+      .limit(1)
+      .get();
+    if (!anyTemplateSnap.empty) {
+      template = { id: anyTemplateSnap.docs[0].id, ...anyTemplateSnap.docs[0].data() };
+    }
+  }
 
   // Fetch AI training data (team-scoped)
-  const [trainingSettings, knowledgeItems, sampleResponses] = await Promise.all([
-    prisma.teamSettings.findUnique({
-      where: { teamId },
-      select: {
-        aiTone: true,
-        aiWritingStyle: true,
-        aiCustomInstructions: true,
-      },
-    }),
-    prisma.aIKnowledgeItem.findMany({
-      where: { teamId },
-      select: { title: true, content: true },
-    }),
-    prisma.aISampleResponse.findMany({
-      where: { teamId },
-      select: { customerQuestion: true, preferredResponse: true },
-    }),
+  const [settingsSnap, knowledgeSnap, samplesSnap] = await Promise.all([
+    teamSettingsDoc(teamId).get(),
+    aiKnowledgeItemsCollection(teamId).get(),
+    aiSampleResponsesCollection(teamId).get(),
   ]);
+
+  const trainingSettings = settingsSnap.exists ? settingsSnap.data() : null;
+  const knowledgeItems = knowledgeSnap.docs.map((d) => {
+    const data = d.data();
+    return { title: data.title, content: data.content };
+  });
+  const sampleResponses = samplesSnap.docs.map((d) => {
+    const data = d.data();
+    return { customerQuestion: data.customerQuestion, preferredResponse: data.preferredResponse };
+  });
 
   // Build enhanced system prompt with template + training data
   systemPrompt = buildEnhancedSystemPrompt(template, {
@@ -152,11 +161,11 @@ export async function generatePersonalizedMessage(
 
       // Update AI config usage stats
       if (activeConfig) {
-        await prisma.aIConfig.update({
-          where: { id: activeConfig.id },
-          data: {
-            requestsUsed: { increment: 1 },
-          },
+        const configRef = aiConfigDoc(teamId, activeConfig.id);
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { FieldValue } = require('firebase-admin/firestore');
+        await configRef.update({
+          requestsUsed: FieldValue.increment(1),
         });
       }
 
@@ -275,50 +284,44 @@ export async function generateFollowUpMessage(
   leadId: string,
   previousMessageId?: string
 ): Promise<{ id: string; content: string; subject?: string; status: string }> {
-  const lead = await prisma.lead.findFirst({
-    where: { id: leadId, teamId },
-  });
+  const leadSnap = await leadDoc(teamId, leadId).get();
 
-  if (!lead) {
+  if (!leadSnap.exists) {
     throw new Error(`Lead with id ${leadId} not found`);
   }
+
+  const lead = { id: leadSnap.id, ...leadSnap.data()! } as Lead;
 
   let previousMessage: { content: string; subject?: string } | undefined;
 
   if (previousMessageId) {
-    const message = await prisma.message.findFirst({
-      where: { id: previousMessageId, teamId },
-      select: { content: true, subject: true },
-    });
+    const msgSnap = await messageDoc(teamId, previousMessageId).get();
 
-    if (!message) {
+    if (!msgSnap.exists) {
       throw new Error(`Message with id ${previousMessageId} not found`);
     }
 
+    const msgData = msgSnap.data()!;
     previousMessage = {
-      content: message.content,
-      subject: message.subject || undefined,
+      content: msgData.content,
+      subject: msgData.subject || undefined,
     };
   } else {
-    const recentMessage = await prisma.message.findFirst({
-      where: {
-        teamId,
-        leadId,
-        status: 'SENT',
-      },
-      orderBy: {
-        sentAt: 'desc',
-      },
-      select: { content: true, subject: true },
-    });
+    const recentMsgSnap = await messagesCollection(teamId)
+      .where('leadId', '==', leadId)
+      .where('status', '==', 'SENT')
+      .orderBy('sentAt', 'desc')
+      .limit(1)
+      .get();
 
-    if (!recentMessage) {
+    if (recentMsgSnap.empty) {
       throw new Error(`No sent message found for lead ${leadId}`);
     }
 
+    const recentMsg = recentMsgSnap.docs[0].data();
     previousMessage = {
-      content: recentMessage.content,
-      subject: recentMessage.subject || undefined,
+      content: recentMsg.content,
+      subject: recentMsg.subject || undefined,
     };
   }
 
@@ -329,24 +332,27 @@ export async function generateFollowUpMessage(
     previousMessage,
   });
 
-  const createdMessage = await prisma.message.create({
-    data: {
-      teamId,
-      leadId,
-      type: 'EMAIL',
-      content: personalizedMessage.content,
-      subject: personalizedMessage.subject,
-      status: 'DRAFT',
-      generatedBy: 'ai',
-      aiProvider: personalizedMessage.provider,
-      aiModel: personalizedMessage.model,
-    },
+  const now = new Date();
+  const msgRef = messagesCollection(teamId).doc();
+  await msgRef.set({
+    leadId,
+    type: 'EMAIL',
+    content: personalizedMessage.content,
+    subject: personalizedMessage.subject || null,
+    status: 'DRAFT',
+    sentAt: null,
+    error: null,
+    generatedBy: 'ai',
+    aiProvider: personalizedMessage.provider,
+    aiModel: personalizedMessage.model,
+    createdAt: now,
+    updatedAt: now,
   });
 
   return {
-    id: createdMessage.id,
-    content: createdMessage.content,
-    subject: createdMessage.subject || undefined,
-    status: createdMessage.status,
+    id: msgRef.id,
+    content: personalizedMessage.content,
+    subject: personalizedMessage.subject,
+    status: 'DRAFT',
   };
 }

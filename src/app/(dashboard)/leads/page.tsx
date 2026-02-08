@@ -3,44 +3,58 @@ import { KanbanBoard } from '@/components/kanban/Board';
 import { Header } from '@/components/layout/Header';
 import { LeadForm } from '@/components/leads/LeadForm';
 import { Button } from '@/components/ui/button';
-import { prisma } from '@/lib/db';
+import { auth } from '@/lib/auth';
+import { leadsCollection, messagesCollection } from '@/lib/firebase/collections';
 import { Sparkles } from 'lucide-react';
 import Link from 'next/link';
 
-async function getLeads() {
-  return prisma.lead.findMany({
-    include: {
-      messages: {
-        select: {
-          id: true,
-          type: true,
-          status: true,
-        },
-      },
-      _count: {
-        select: {
-          messages: true,
-        },
-      },
-    },
-    orderBy: [
-      { score: 'desc' },
-      { createdAt: 'desc' },
-    ],
-  });
+export const dynamic = 'force-dynamic';
+
+async function getLeads(teamId: string) {
+  const snapshot = await leadsCollection(teamId)
+    .orderBy('score', 'desc')
+    .get();
+
+  // Attach message info to each lead
+  const leads = await Promise.all(
+    snapshot.docs.map(async (doc) => {
+      const data = doc.data();
+      const msgSnap = await messagesCollection(teamId)
+        .where('leadId', '==', doc.id)
+        .select('type', 'status')
+        .get();
+      const messages = msgSnap.docs.map((m) => ({
+        id: m.id,
+        type: m.data().type,
+        status: m.data().status,
+      }));
+      return {
+        id: doc.id,
+        ...data,
+        messages,
+        _count: { messages: messages.length },
+      };
+    })
+  );
+
+  return leads;
 }
 
-async function getNewLeadsCount() {
-  return prisma.lead.count({
-    where: { status: 'NEW' },
-  });
+async function getNewLeadsCount(teamId: string) {
+  const snap = await leadsCollection(teamId)
+    .where('status', '==', 'NEW')
+    .count()
+    .get();
+  return snap.data().count;
 }
 
 export default async function LeadsPage() {
-  const [leads, newLeadsCount] = await Promise.all([
-    getLeads(),
-    getNewLeadsCount(),
-  ]);
+  const session = await auth();
+  const teamId = session?.user?.teamId || '';
+
+  const [leads, newLeadsCount] = teamId
+    ? await Promise.all([getLeads(teamId), getNewLeadsCount(teamId)])
+    : [[], 0];
 
   return (
     <div className="flex flex-col h-full">

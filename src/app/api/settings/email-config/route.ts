@@ -1,6 +1,6 @@
 import { auth } from '@/lib/auth';
 import { encrypt } from '@/lib/crypto';
-import { prisma } from '@/lib/db';
+import { teamSettingsDoc } from '@/lib/firebase/collections';
 import { getMaskedSmtpConfig, getMaskedImapConfig } from '@/lib/email/config';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -78,11 +78,17 @@ export async function PATCH(request: NextRequest) {
     if (data.imapUser !== undefined) updateData.imapUser = data.imapUser ? encrypt(data.imapUser) : null;
     if (data.imapPass !== undefined) updateData.imapPass = data.imapPass ? encrypt(data.imapPass) : null;
 
-    await prisma.teamSettings.upsert({
-      where: { teamId },
-      update: updateData,
-      create: { teamId, ...updateData } as Parameters<typeof prisma.teamSettings.create>[0]['data'],
-    });
+    updateData.updatedAt = new Date();
+
+    // Upsert team settings
+    const settingsDoc = teamSettingsDoc(teamId);
+    const existingDoc = await settingsDoc.get();
+    
+    if (existingDoc.exists) {
+      await settingsDoc.update(updateData);
+    } else {
+      await settingsDoc.set(updateData);
+    }
 
     // Return masked config
     const [smtp, imap] = await Promise.all([

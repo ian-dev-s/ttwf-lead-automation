@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { inboundEmailsCollection, leadDoc } from '@/lib/firebase/collections';
 import { isImapConfigured } from '@/lib/email/config';
 import { fetchNewEmails } from '@/lib/email/imap';
 import { NextRequest, NextResponse } from 'next/server';
@@ -19,39 +19,64 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '20', 10);
     const filter = searchParams.get('filter'); // 'read', 'unread', 'matched', 'unmatched'
 
-    const where: Record<string, unknown> = { teamId };
-    
-    if (filter === 'read') where.isRead = true;
-    if (filter === 'unread') where.isRead = false;
-    if (filter === 'matched') where.leadId = { not: null };
-    if (filter === 'unmatched') where.leadId = null;
+    // Build query - apply where first, then orderBy
+    let query: FirebaseFirestore.Query<any> = inboundEmailsCollection(teamId);
 
-    const [emails, total] = await Promise.all([
-      prisma.inboundEmail.findMany({
-        where,
-        include: {
-          lead: {
-            select: {
-              id: true,
-              businessName: true,
-              email: true,
-            },
-          },
-        },
-        orderBy: { receivedAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      prisma.inboundEmail.count({ where }),
-    ]);
+    if (filter === 'read') {
+      query = query.where('isRead', '==', true);
+    } else if (filter === 'unread') {
+      query = query.where('isRead', '==', false);
+    } else if (filter === 'matched') {
+      query = query.where('leadId', '!=', null);
+    } else if (filter === 'unmatched') {
+      query = query.where('leadId', '==', null);
+    }
+
+    query = query.orderBy('receivedAt', 'desc');
+
+    const snapshot = await query.get();
+    const allEmails = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    // Apply pagination manually (Firestore doesn't support offset efficiently)
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + limit;
+    const emails = allEmails.slice(startIndex, endIndex);
+
+    // Fetch lead relations for emails that have leadId
+    const emailsWithLeads = await Promise.all(
+      emails.map(async (email) => {
+        if (email.leadId) {
+          try {
+            const leadDocRef = await leadDoc(teamId, email.leadId).get();
+            if (leadDocRef.exists) {
+              const leadData = leadDocRef.data()!;
+              return {
+                ...email,
+                lead: {
+                  id: leadDocRef.id,
+                  businessName: leadData.businessName,
+                  email: leadData.email,
+                },
+              };
+            }
+          } catch (error) {
+            console.error(`Error fetching lead ${email.leadId}:`, error);
+          }
+        }
+        return email;
+      })
+    );
 
     return NextResponse.json({
-      emails,
+      emails: emailsWithLeads,
       pagination: {
         page,
         limit,
-        total,
-        totalPages: Math.ceil(total / limit),
+        total: allEmails.length,
+        totalPages: Math.ceil(allEmails.length / limit),
       },
     });
   } catch (error) {

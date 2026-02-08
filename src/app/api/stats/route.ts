@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { leadsCollection, messagesCollection } from '@/lib/firebase/collections';
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
@@ -14,56 +14,50 @@ export async function GET() {
 
     const teamId = session.user.teamId;
 
-    const [
-      totalLeads,
-      leadsByStatus,
-      recentLeads,
-      pendingMessages,
-      weeklyLeads,
-    ] = await Promise.all([
-      prisma.lead.count({ where: { teamId } }),
-      prisma.lead.groupBy({
-        where: { teamId },
-        by: ['status'],
-        _count: true,
-      }),
-      prisma.lead.findMany({
-        where: { teamId },
-        take: 5,
-        orderBy: { createdAt: 'desc' },
-        select: {
-          id: true,
-          businessName: true,
-          status: true,
-          location: true,
-          createdAt: true,
-        },
-      }),
-      prisma.message.count({
-        where: {
-          teamId,
-          status: {
-            in: ['DRAFT', 'PENDING_APPROVAL', 'APPROVED'],
-          },
-        },
-      }),
-      prisma.lead.count({
-        where: {
-          teamId,
-          createdAt: {
-            gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-          },
-        },
-      }),
-    ]);
+    // Get total leads count
+    const totalLeadsSnapshot = await leadsCollection(teamId).count().get();
+    const totalLeads = totalLeadsSnapshot.data().count;
 
-    const statusCounts = leadsByStatus.reduce(
-      (acc, item) => {
-        acc[item.status] = item._count;
-        return acc;
-      },
-      {} as Record<string, number>
-    );
+    // Get all leads to calculate status counts (groupBy equivalent)
+    const allLeadsSnapshot = await leadsCollection(teamId).get();
+    const statusCounts: Record<string, number> = {};
+    
+    allLeadsSnapshot.docs.forEach((doc) => {
+      const status = doc.data().status;
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+    });
+
+    // Get recent leads (last 5)
+    const recentLeadsSnapshot = await leadsCollection(teamId)
+      .orderBy('createdAt', 'desc')
+      .limit(5)
+      .get();
+    
+    const recentLeads = recentLeadsSnapshot.docs.map((doc) => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        businessName: data.businessName,
+        status: data.status,
+        location: data.location,
+        createdAt: data.createdAt,
+      };
+    });
+
+    // Count pending messages
+    const pendingMessagesSnapshot = await messagesCollection(teamId)
+      .where('status', 'in', ['DRAFT', 'PENDING_APPROVAL', 'APPROVED'])
+      .count()
+      .get();
+    const pendingMessages = pendingMessagesSnapshot.data().count;
+
+    // Count weekly leads (created in last 7 days)
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const weeklyLeadsSnapshot = await leadsCollection(teamId)
+      .where('createdAt', '>=', sevenDaysAgo)
+      .count()
+      .get();
+    const weeklyLeads = weeklyLeadsSnapshot.data().count;
 
     return NextResponse.json({
       totalLeads,

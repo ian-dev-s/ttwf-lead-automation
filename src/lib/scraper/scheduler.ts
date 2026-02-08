@@ -1,4 +1,4 @@
-import { JobStatus, LeadStatus } from '@prisma/client';
+import type { Lead } from '@/types';
 import { Browser, chromium } from 'playwright';
 import { generatePersonalizedMessage } from '../ai/personalize';
 import { SmartEnrichedLead, smartEnrichLead } from '../ai/smart-enricher';
@@ -10,7 +10,16 @@ import {
     SUPPORTED_COUNTRIES,
     TARGET_CATEGORIES
 } from '../constants';
-import { prisma } from '../db';
+import {
+    scrapingJobDoc,
+    scrapingJobsCollection,
+    leadsCollection,
+    leadDoc,
+    messagesCollection,
+    analyzedBusinessesCollection,
+    teamSettingsDoc,
+} from '../firebase/collections';
+import { adminDb } from '../firebase/admin';
 import {
     cancelJobToken,
     createCancellationToken,
@@ -39,60 +48,49 @@ export {
 };
 
 // ============================================================================
-// PROCESS PID PERSISTENCE - Save and restore PIDs to/from database
+// PROCESS PID PERSISTENCE - Save and restore PIDs to/from Firestore
 // ============================================================================
 
 /**
- * Persist process PIDs to the database for a job
- * This allows recovery after server restart
+ * Persist process PIDs to Firestore for a job
  */
-async function persistJobProcessPids(jobId: string): Promise<void> {
+async function persistJobProcessPids(teamId: string, jobId: string): Promise<void> {
   try {
     const processInfo = getJobProcessInfo(jobId);
     if (processInfo.length === 0) return;
-    
-    // Use type assertion to bypass stale TypeScript cache
-    await prisma.scrapingJob.update({
-      where: { id: jobId },
-      data: {
-        processPids: JSON.stringify(processInfo),
-      } as Record<string, unknown>,
+
+    await scrapingJobDoc(teamId, jobId).update({
+      processPids: JSON.stringify(processInfo),
     });
-    console.log(`[Job ${jobId}] Persisted ${processInfo.length} process PIDs to database`);
+    console.log(`[Job ${jobId}] Persisted ${processInfo.length} process PIDs to Firestore`);
   } catch (error) {
     console.error(`[Job ${jobId}] Failed to persist process PIDs:`, error);
   }
 }
 
 /**
- * Clear persisted process PIDs from the database for a job
+ * Clear persisted process PIDs from Firestore for a job
  */
-async function clearPersistedProcessPids(jobId: string): Promise<void> {
+async function clearPersistedProcessPids(teamId: string, jobId: string): Promise<void> {
   try {
-    // Use type assertion to bypass stale TypeScript cache
-    await prisma.scrapingJob.update({
-      where: { id: jobId },
-      data: {
-        processPids: null,
-      } as Record<string, unknown>,
+    await scrapingJobDoc(teamId, jobId).update({
+      processPids: null,
     });
-    console.log(`[Job ${jobId}] Cleared persisted process PIDs from database`);
+    console.log(`[Job ${jobId}] Cleared persisted process PIDs from Firestore`);
   } catch (error) {
     console.error(`[Job ${jobId}] Failed to clear persisted process PIDs:`, error);
   }
 }
 
 /**
- * Get persisted process PIDs for a job (without restoring tracking)
+ * Get persisted process PIDs for a job
  */
-export async function getPersistedProcessPids(jobId: string): Promise<TrackedProcessInfo[]> {
+export async function getPersistedProcessPids(teamId: string, jobId: string): Promise<TrackedProcessInfo[]> {
   try {
-    const job = await prisma.scrapingJob.findUnique({
-      where: { id: jobId },
-    });
-    
-    // Use type assertion to access processPids
-    const processPids = (job as Record<string, unknown> | null)?.processPids as string | null;
+    const jobSnap = await scrapingJobDoc(teamId, jobId).get();
+    if (!jobSnap.exists) return [];
+    const data = jobSnap.data()!;
+    const processPids = data.processPids as string | null;
     if (!processPids) return [];
     return JSON.parse(processPids);
   } catch (error) {
@@ -116,45 +114,49 @@ interface AnalyzedBusinessCheck {
  * Check if a business has been analyzed before
  */
 async function checkAnalyzedHistory(
+  teamId: string,
   googleMapsUrl: string | undefined,
   businessName: string,
   location: string,
   country: string = DEFAULT_COUNTRY_CODE
 ): Promise<AnalyzedBusinessCheck> {
   try {
-    // First try to find by Google Maps URL (most reliable)
+    // Try to find by Google Maps URL (most reliable)
     if (googleMapsUrl) {
-      const byUrl = await prisma.analyzedBusiness.findUnique({
-        where: { googleMapsUrl },
-      });
-      if (byUrl) {
+      const byUrlSnap = await analyzedBusinessesCollection(teamId)
+        .where('googleMapsUrl', '==', googleMapsUrl)
+        .limit(1)
+        .get();
+
+      if (!byUrlSnap.empty) {
+        const data = byUrlSnap.docs[0].data();
         return {
           wasAnalyzedBefore: true,
-          isGoodProspect: byUrl.isGoodProspect,
-          skipReason: byUrl.skipReason || undefined,
-          analyzedAt: byUrl.analyzedAt,
+          isGoodProspect: data.isGoodProspect,
+          skipReason: data.skipReason || undefined,
+          analyzedAt: data.analyzedAt instanceof Date ? data.analyzedAt : new Date(data.analyzedAt as any),
         };
       }
     }
-    
+
     // Fallback: try to find by name + location + country
-    const byNameLocation = await prisma.analyzedBusiness.findFirst({
-      where: {
-        businessName: businessName,
-        location: location,
-        country: country,
-      },
-    });
-    
-    if (byNameLocation) {
+    const byNameSnap = await analyzedBusinessesCollection(teamId)
+      .where('businessName', '==', businessName)
+      .where('location', '==', location)
+      .where('country', '==', country)
+      .limit(1)
+      .get();
+
+    if (!byNameSnap.empty) {
+      const data = byNameSnap.docs[0].data();
       return {
         wasAnalyzedBefore: true,
-        isGoodProspect: byNameLocation.isGoodProspect,
-        skipReason: byNameLocation.skipReason || undefined,
-        analyzedAt: byNameLocation.analyzedAt,
+        isGoodProspect: data.isGoodProspect,
+        skipReason: data.skipReason || undefined,
+        analyzedAt: data.analyzedAt instanceof Date ? data.analyzedAt : new Date(data.analyzedAt as any),
       };
     }
-    
+
     return { wasAnalyzedBefore: false };
   } catch (error) {
     console.error('Error checking analyzed history:', error);
@@ -185,37 +187,48 @@ async function saveToAnalyzedHistory(
   leadId?: string
 ): Promise<void> {
   try {
-    // Use upsert to handle potential duplicates
-    await prisma.analyzedBusiness.upsert({
-      where: {
-        googleMapsUrl: business.googleMapsUrl || `manual_${business.name}_${location}_${country}`,
-      },
-      create: {
-        teamId,
-        businessName: business.name,
-        location,
-        country,
-        googleMapsUrl: business.googleMapsUrl,
-        phone: business.phone,
-        website: business.website,
-        address: business.address,
-        googleRating: business.rating,
-        reviewCount: business.reviewCount,
-        category: business.category,
-        websiteQuality,
-        isGoodProspect,
-        skipReason,
-        wasConverted: !!leadId,
-        leadId,
-      },
-      update: {
-        websiteQuality,
-        isGoodProspect,
-        skipReason,
-        wasConverted: !!leadId,
-        leadId,
-        updatedAt: new Date(),
-      },
+    const now = new Date();
+
+    // Check if already exists by googleMapsUrl
+    if (business.googleMapsUrl) {
+      const existingSnap = await analyzedBusinessesCollection(teamId)
+        .where('googleMapsUrl', '==', business.googleMapsUrl)
+        .limit(1)
+        .get();
+
+      if (!existingSnap.empty) {
+        // Update existing
+        await existingSnap.docs[0].ref.update({
+          websiteQuality: websiteQuality ?? null,
+          isGoodProspect,
+          skipReason,
+          wasConverted: !!leadId,
+          leadId: leadId || null,
+          updatedAt: now,
+        });
+        return;
+      }
+    }
+
+    // Create new
+    await analyzedBusinessesCollection(teamId).doc().set({
+      businessName: business.name,
+      location,
+      country,
+      googleMapsUrl: business.googleMapsUrl || null,
+      phone: business.phone || null,
+      website: business.website || null,
+      address: business.address || null,
+      googleRating: business.rating || null,
+      reviewCount: business.reviewCount || null,
+      category: business.category || null,
+      websiteQuality: websiteQuality ?? null,
+      isGoodProspect,
+      skipReason,
+      wasConverted: !!leadId,
+      leadId: leadId || null,
+      analyzedAt: now,
+      updatedAt: now,
     });
   } catch (error) {
     console.error('Error saving to analyzed history:', error);
@@ -226,131 +239,85 @@ async function saveToAnalyzedHistory(
 export { DEFAULT_COUNTRY_CODE, SA_CITIES, SUPPORTED_COUNTRIES, TARGET_CATEGORIES };
 
 // In-memory store for job cancellation/completion signals
-// Maps jobId -> { cancelled: boolean, completed: boolean, scraper: any, browser: any }
-const runningJobs = new Map<string, { 
+const runningJobs = new Map<string, {
   cancelled: boolean;
-  completed: boolean; // New flag to signal job should stop
+  completed: boolean;
   scraper: ReturnType<typeof createGoogleMapsScraper> | null;
   browser: Browser | null;
+  teamId: string;
 }>();
 
-/**
- * Check if a job has been cancelled
- */
 export function isJobCancelled(jobId: string): boolean {
   const job = runningJobs.get(jobId);
   return job?.cancelled ?? false;
 }
 
-/**
- * Check if a job should stop (either cancelled or completed)
- */
 export function shouldJobStop(jobId: string): boolean {
   const job = runningJobs.get(jobId);
-  if (!job) return true; // If not found, stop
+  if (!job) return true;
   return job.cancelled || job.completed;
 }
 
-/**
- * Mark a job as completed (reached target)
- */
 export function markJobCompleted(jobId: string): void {
   const job = runningJobs.get(jobId);
   if (job) {
     job.completed = true;
-    console.log(`🎯 Job ${jobId} marked as completed - stopping all operations`);
+    console.log(`Target reached for job ${jobId} - stopping`);
   }
 }
 
 /**
- * Cancel a running job - signals it to stop and updates DB
- * This is aggressive and will forcefully terminate all resources
+ * Cancel a running job
  */
-export async function cancelJob(jobId: string): Promise<boolean> {
-  console.log(`🛑 CANCELLING JOB: ${jobId}`);
-  
+export async function cancelJob(teamId: string, jobId: string): Promise<boolean> {
+  console.log(`Cancelling job: ${jobId}`);
+
   try {
-    // STEP 1: Trigger cancellation token - this will abort any ongoing operations
-    console.log(`🛑 [Step 1] Triggering cancellation token for job: ${jobId}`);
     cancelJobToken(jobId);
-    
-    // STEP 2: Signal in-memory job state if it exists
+
     const jobState = runningJobs.get(jobId);
     if (jobState) {
       jobState.cancelled = true;
       jobState.completed = true;
-      console.log(`🛑 [Step 2] In-memory cancellation flags set`);
-      
-      // Try graceful close (non-blocking, best effort)
-      if (jobState.scraper) {
-        jobState.scraper.close().catch(() => {});
-      }
-      if (jobState.browser) {
-        jobState.browser.close().catch(() => {});
-      }
-    } else {
-      console.log(`🛑 [Step 2] Job not in memory (may have been restarted)`);
+      if (jobState.scraper) jobState.scraper.close().catch(() => {});
+      if (jobState.browser) jobState.browser.close().catch(() => {});
     }
-    
-    // STEP 3: CRITICAL - Find and kill ALL Chrome processes with this job's ID
-    // This is the most reliable method - searches ALL running Chrome processes
-    // for ones that have --job-id=<jobId> in their command line
-    console.log(`🛑 [Step 3] Finding and killing all processes for job ${jobId}...`);
+
     const killResult = await findAndKillJobProcesses(jobId);
-    console.log(`🛑 [Step 3] Process cleanup: found=${killResult.found}, killed=${killResult.killed}, failed=${killResult.failed}`);
-    
-    // STEP 4: Get current job state for final update
-    const currentJob = await prisma.scrapingJob.findUnique({
-      where: { id: jobId },
-      select: { leadsFound: true },
+    console.log(`Process cleanup for ${jobId}: found=${killResult.found}, killed=${killResult.killed}`);
+
+    const currentSnap = await scrapingJobDoc(teamId, jobId).get();
+    const currentData = currentSnap.exists ? currentSnap.data()! : null;
+
+    await scrapingJobDoc(teamId, jobId).update({
+      status: 'COMPLETED',
+      completedAt: new Date(),
+      error: 'Job cancelled by user',
+      leadsFound: (currentData?.leadsFound as number) || 0,
+      processPids: null,
     });
-    
-    // STEP 5: Update database status to COMPLETED
-    await prisma.scrapingJob.update({
-      where: { id: jobId },
-      data: {
-        status: JobStatus.COMPLETED,
-        completedAt: new Date(),
-        error: 'Job cancelled by user',
-        leadsFound: currentJob?.leadsFound ?? 0,
-        processPids: null, // Clear any persisted PIDs
-      } as Record<string, unknown>,
-    });
-    console.log(`🛑 [Step 5] Database status updated to COMPLETED`);
-    
-    // STEP 6: Cleanup
+
     runningJobs.delete(jobId);
     removeCancellationToken(jobId);
     clearJobPids(jobId);
-    
-    console.log(`🛑 Job ${jobId} cancellation complete: ${killResult.killed} processes killed`);
+
     return true;
-    
   } catch (error) {
-    console.error(`🛑 [ERROR] Failed to cancel job ${jobId}:`, error);
-    
-    // Even on error, try to mark as completed and kill processes
+    console.error(`Failed to cancel job ${jobId}:`, error);
+
     try {
-      // Still try to kill processes - this is critical
       await findAndKillJobProcesses(jobId);
-      
-      await prisma.scrapingJob.update({
-        where: { id: jobId },
-        data: {
-          status: JobStatus.COMPLETED,
-          completedAt: new Date(),
-          error: 'Job cancelled by user (with cleanup errors)',
-          processPids: null,
-        } as Record<string, unknown>,
+      await scrapingJobDoc(teamId, jobId).update({
+        status: 'COMPLETED',
+        completedAt: new Date(),
+        error: 'Job cancelled by user (with cleanup errors)',
+        processPids: null,
       });
-      console.log(`🛑 [ERROR RECOVERY] Job marked as COMPLETED`);
-      
       runningJobs.delete(jobId);
       removeCancellationToken(jobId);
       clearJobPids(jobId);
       return true;
-    } catch (dbError) {
-      console.error(`🛑 [ERROR RECOVERY] Failed:`, dbError);
+    } catch {
       runningJobs.delete(jobId);
       removeCancellationToken(jobId);
       clearJobPids(jobId);
@@ -360,28 +327,22 @@ export async function cancelJob(jobId: string): Promise<boolean> {
 }
 
 /**
- * Delete a scraping job from the database
+ * Delete a scraping job
  */
-export async function deleteJob(jobId: string): Promise<boolean> {
+export async function deleteJob(teamId: string, jobId: string): Promise<boolean> {
   try {
-    // Make sure it's not running, cancel if it is
     const jobState = runningJobs.get(jobId);
     if (jobState) {
-      await cancelJob(jobId);
+      await cancelJob(teamId, jobId);
     } else {
-      // Job not in memory - still kill any processes with this job's ID
       const killResult = await findAndKillJobProcesses(jobId);
       if (killResult.killed > 0) {
-        console.log(`🗑️ Job ${jobId} pre-delete cleanup: killed ${killResult.killed} processes`);
+        console.log(`Pre-delete cleanup for ${jobId}: killed ${killResult.killed} processes`);
       }
     }
-    
-    // Delete the job from database
-    await prisma.scrapingJob.delete({
-      where: { id: jobId },
-    });
-    
-    console.log(`🗑️ Deleted job: ${jobId}`);
+
+    await scrapingJobDoc(teamId, jobId).delete();
+    console.log(`Deleted job: ${jobId}`);
     return true;
   } catch (error) {
     console.error(`Failed to delete job ${jobId}:`, error);
@@ -390,459 +351,339 @@ export async function deleteJob(jobId: string): Promise<boolean> {
 }
 
 /**
- * Save an AI-enriched lead to the database and auto-generate email message
+ * Save an AI-enriched lead to Firestore and auto-generate email message
  */
 async function saveSmartEnrichedLead(lead: SmartEnrichedLead, teamId: string, countryCode: string = DEFAULT_COUNTRY_CODE): Promise<boolean> {
   try {
-    // Check if lead already exists (team-scoped)
-    const existing = await prisma.lead.findFirst({
-      where: {
-        teamId,
-        OR: [
-          { googleMapsUrl: lead.googleMapsUrl },
-          { businessName: lead.businessName, location: lead.location },
-        ],
-      },
-    });
+    // Check if lead already exists (by googleMapsUrl or businessName+location)
+    if (lead.googleMapsUrl) {
+      const byUrlSnap = await leadsCollection(teamId)
+        .where('googleMapsUrl', '==', lead.googleMapsUrl)
+        .limit(1)
+        .get();
+      if (!byUrlSnap.empty) {
+        console.log(`   Lead already exists: ${lead.businessName}`);
+        return false;
+      }
+    }
 
-    if (existing) {
-      console.log(`   ⚠️  Lead already exists: ${lead.businessName}`);
+    const byNameSnap = await leadsCollection(teamId)
+      .where('businessName', '==', lead.businessName)
+      .where('location', '==', lead.location)
+      .limit(1)
+      .get();
+    if (!byNameSnap.empty) {
+      console.log(`   Lead already exists: ${lead.businessName}`);
       return false;
     }
 
-    // Calculate final score
     const score = lead.leadScore;
+    const now = new Date();
 
-    // Create the lead with country and teamId
-    const newLead = await prisma.lead.create({
-      data: {
-        teamId,
-        businessName: lead.businessName,
-        industry: lead.industry,
-        location: lead.location,
-        country: countryCode,
-        address: lead.address,
-        phone: lead.phones[0], // Primary phone
-        email: lead.emails[0], // Primary email
-        facebookUrl: lead.facebookUrl,
-        instagramUrl: lead.instagramUrl,
-        twitterUrl: lead.twitterUrl,
-        linkedinUrl: lead.linkedinUrl,
-        googleMapsUrl: lead.googleMapsUrl,
-        website: lead.website,
-        websiteQuality: lead.websiteQualityScore,
-        googleRating: lead.googleRating,
-        reviewCount: lead.reviewCount,
-        description: lead.description,
-        status: LeadStatus.NEW,
-        source: 'ai_scraper',
-        score,
-        notes: buildLeadNotes(lead),
-        metadata: {
-          // Store all AI insights
-          allPhones: lead.phones,
-          allEmails: lead.emails,
-          whatsappNumber: lead.whatsappNumber,
-          servicesOffered: lead.servicesOffered,
-          targetMarket: lead.targetMarket,
-          uniqueSellingPoints: lead.uniqueSellingPoints,
-          qualificationTier: lead.qualificationTier,
-          recommendedAction: lead.recommendedAction,
-          recommendedChannel: lead.recommendedChannel,
-          personalizationHooks: lead.personalizationHooks,
-          keyTalkingPoints: lead.keyTalkingPoints,
-          avoidTopics: lead.avoidTopics,
-          aiReasoning: lead.aiReasoning,
-          enrichmentSources: lead.enrichmentSources,
-          enrichmentConfidence: lead.enrichmentConfidence,
-          warnings: lead.warnings,
-        },
+    const leadDocRef = leadsCollection(teamId).doc();
+    const leadData = {
+      businessName: lead.businessName,
+      businessNameLower: lead.businessName.toLowerCase(),
+      industry: lead.industry || null,
+      location: lead.location,
+      locationLower: lead.location.toLowerCase(),
+      country: countryCode,
+      address: lead.address || null,
+      phone: lead.phones[0] || null,
+      email: lead.emails[0] || null,
+      facebookUrl: lead.facebookUrl || null,
+      instagramUrl: lead.instagramUrl || null,
+      twitterUrl: lead.twitterUrl || null,
+      linkedinUrl: lead.linkedinUrl || null,
+      googleMapsUrl: lead.googleMapsUrl || null,
+      website: lead.website || null,
+      websiteQuality: lead.websiteQualityScore || null,
+      googleRating: lead.googleRating || null,
+      reviewCount: lead.reviewCount || null,
+      description: lead.description || null,
+      status: 'NEW' as const,
+      source: 'ai_scraper',
+      score,
+      notes: buildLeadNotes(lead),
+      metadata: {
+        allPhones: lead.phones,
+        allEmails: lead.emails,
+        whatsappNumber: lead.whatsappNumber,
+        servicesOffered: lead.servicesOffered,
+        targetMarket: lead.targetMarket,
+        uniqueSellingPoints: lead.uniqueSellingPoints,
+        qualificationTier: lead.qualificationTier,
+        recommendedAction: lead.recommendedAction,
+        recommendedChannel: lead.recommendedChannel,
+        personalizationHooks: lead.personalizationHooks,
+        keyTalkingPoints: lead.keyTalkingPoints,
+        avoidTopics: lead.avoidTopics,
+        aiReasoning: lead.aiReasoning,
+        enrichmentSources: lead.enrichmentSources,
+        enrichmentConfidence: lead.enrichmentConfidence,
+        warnings: lead.warnings,
       },
-    });
+      createdById: null,
+      createdAt: now,
+      updatedAt: now,
+      contactedAt: null,
+    };
+
+    await leadDocRef.set(leadData);
+    const newLeadId = leadDocRef.id;
+    const newLead = { id: newLeadId, ...leadData } as Lead;
 
     // Auto-generate email message for the new lead
     try {
-      console.log(`   📧 Auto-generating email for: ${lead.businessName}`);
+      console.log(`   Generating email for: ${lead.businessName}`);
       const emailMessage = await generatePersonalizedMessage({
         teamId,
         lead: newLead,
       });
 
-      await prisma.message.create({
-        data: {
-          teamId,
-          leadId: newLead.id,
-          type: 'EMAIL',
-          subject: emailMessage.subject,
-          content: emailMessage.content,
-          status: 'DRAFT',
-          generatedBy: 'ai',
-          aiProvider: emailMessage.provider,
-          aiModel: emailMessage.model,
-        },
+      const now2 = new Date();
+      await messagesCollection(teamId).doc().set({
+        leadId: newLeadId,
+        type: 'EMAIL',
+        subject: emailMessage.subject || null,
+        content: emailMessage.content,
+        status: 'DRAFT',
+        sentAt: null,
+        error: null,
+        generatedBy: 'ai',
+        aiProvider: emailMessage.provider,
+        aiModel: emailMessage.model,
+        createdAt: now2,
+        updatedAt: now2,
       });
 
-      // Now that email is generated, update status based on qualification tier
-      const newStatus = lead.qualificationTier === 'A' ? LeadStatus.QUALIFIED : LeadStatus.MESSAGE_READY;
-      await prisma.lead.update({
-        where: { id: newLead.id },
-        data: { status: newStatus },
-      });
-      
-      console.log(`   ✅ Email generated, status updated to: ${newStatus}`);
+      // Update status based on qualification tier
+      const newStatus = lead.qualificationTier === 'A' ? 'QUALIFIED' : 'MESSAGE_READY';
+      await leadDocRef.update({ status: newStatus, updatedAt: new Date() });
+
+      console.log(`   Email generated, status updated to: ${newStatus}`);
     } catch (emailError) {
-      console.error(`   ⚠️ Failed to auto-generate email for ${lead.businessName}:`, emailError);
-      // Lead is still saved, just without email - stays as NEW
+      console.error(`   Failed to auto-generate email for ${lead.businessName}:`, emailError);
     }
 
     return true;
   } catch (error) {
-    console.error(`   ❌ Failed to save lead ${lead.businessName}:`, error);
+    console.error(`   Failed to save lead ${lead.businessName}:`, error);
     return false;
   }
 }
 
-/**
- * Build notes string from AI insights
- */
 function buildLeadNotes(lead: SmartEnrichedLead): string {
   const notes: string[] = [];
-  
-  // Qualification summary
-  notes.push(`🎯 Lead Quality: Tier ${lead.qualificationTier} (${lead.leadScore}/100)`);
-  notes.push(`📋 Recommended: ${lead.recommendedAction.replace(/_/g, ' ')} via ${lead.recommendedChannel}`);
-  
-  // Services
+
+  notes.push(`Lead Quality: Tier ${lead.qualificationTier} (${lead.leadScore}/100)`);
+  notes.push(`Recommended: ${lead.recommendedAction.replace(/_/g, ' ')} via ${lead.recommendedChannel}`);
+
   if (lead.servicesOffered.length > 0) {
-    notes.push(`\n🔧 Services: ${lead.servicesOffered.join(', ')}`);
+    notes.push(`\nServices: ${lead.servicesOffered.join(', ')}`);
   }
-  
-  // Personalization hooks
+
   if (lead.personalizationHooks.length > 0) {
-    notes.push(`\n💡 Personalization hooks:`);
-    lead.personalizationHooks.forEach(hook => notes.push(`  • ${hook}`));
+    notes.push(`\nPersonalization hooks:`);
+    lead.personalizationHooks.forEach(hook => notes.push(`  - ${hook}`));
   }
-  
-  // Key talking points
+
   if (lead.keyTalkingPoints.length > 0) {
-    notes.push(`\n🗣️ Key talking points:`);
-    lead.keyTalkingPoints.forEach(point => notes.push(`  • ${point}`));
+    notes.push(`\nKey talking points:`);
+    lead.keyTalkingPoints.forEach(point => notes.push(`  - ${point}`));
   }
-  
-  // Topics to avoid
+
   if (lead.avoidTopics.length > 0) {
-    notes.push(`\n⚠️ Avoid discussing:`);
-    lead.avoidTopics.forEach(topic => notes.push(`  • ${topic}`));
+    notes.push(`\nAvoid discussing:`);
+    lead.avoidTopics.forEach(topic => notes.push(`  - ${topic}`));
   }
-  
-  // Warnings
+
   if (lead.warnings.length > 0) {
-    notes.push(`\n🚨 Warnings:`);
-    lead.warnings.forEach(warning => notes.push(`  • ${warning}`));
+    notes.push(`\nWarnings:`);
+    lead.warnings.forEach(warning => notes.push(`  - ${warning}`));
   }
-  
+
   return notes.join('\n');
 }
 
 // Run a scraping job with AI-powered multi-source enrichment
-export async function runScrapingJob(jobId: string): Promise<void> {
-  const job = await prisma.scrapingJob.findUnique({
-    where: { id: jobId },
-  });
+export async function runScrapingJob(teamId: string, jobId: string): Promise<void> {
+  const jobSnap = await scrapingJobDoc(teamId, jobId).get();
 
-  if (!job) {
+  if (!jobSnap.exists) {
     throw new Error(`Job ${jobId} not found`);
   }
 
-  // Create cancellation token for this job - allows immediate cancellation at any point
+  const job = { id: jobSnap.id, ...jobSnap.data()! } as any;
+
   const cancellationToken = createCancellationToken(jobId);
-  console.log(`[Job ${jobId}] Cancellation token created`);
 
-  // Update job status to running
-  await prisma.scrapingJob.update({
-    where: { id: jobId },
-    data: {
-      status: JobStatus.RUNNING,
-      startedAt: new Date(),
-    },
+  await scrapingJobDoc(teamId, jobId).update({
+    status: 'RUNNING',
+    startedAt: new Date(),
   });
 
-  // Get teamId from the job
-  const teamId = job.teamId;
+  // Read scrape delay from team settings
+  const settingsSnap = await teamSettingsDoc(teamId).get();
+  const settings = settingsSnap.exists ? settingsSnap.data()! : null;
+  const scrapeDelay = (settings?.scrapeDelayMs as number) || 500;
 
-  // Read scrape delay from team settings (fallback to 500ms)
-  const teamSettings = await prisma.teamSettings.findUnique({
-    where: { teamId },
-    select: { scrapeDelayMs: true },
-  });
-  const scrapeDelay = teamSettings?.scrapeDelayMs || 500;
-
-  // OPTIMIZED: Reduced delays for faster scraping
   const scraper = createGoogleMapsScraper({
     headless: true,
     delayBetweenRequests: scrapeDelay,
     maxResults: job.leadsRequested,
   });
-  
-  // Set job ID on scraper so it can use the cancellation token
+
   scraper.setJobId(jobId);
 
   let leadsFound = 0;
   let browser: Browser | null = null;
 
-  // Register this job as running (for cancellation/completion support)
-  runningJobs.set(jobId, { cancelled: false, completed: false, scraper, browser: null });
-  
-  // Initialize job logging
+  runningJobs.set(jobId, { cancelled: false, completed: false, scraper, browser: null, teamId });
+
   initJobLogs(jobId);
   clearJobLogs(jobId);
 
   try {
     jobLog.info(jobId, 'Initializing scraper...');
     await scraper.initialize();
-    
-    // Check for cancellation before starting browser
+
     if (shouldJobStop(jobId)) {
-      console.log(`🛑 Job ${jobId} stopped before browser init`);
-      jobLog.warning(jobId, 'Job stopped before browser initialization');
+      jobLog.warning(jobId, 'Job stopped before browser init');
       return;
     }
-    
+
     jobLog.info(jobId, 'Launching browser for AI enrichment...');
-    
-    // Create a separate browser for AI enrichment with JOB-SPECIFIC identifiable args
-    // The --job-id=<jobId> arg allows us to find this browser even after server restart
+
     const chromeArgs = getScraperChromeArgs(jobId);
-    console.log(`[Job ${jobId}] Launching browser with args: ${chromeArgs.slice(-3).join(' ')}`);
-    
-    browser = await chromium.launch({
-      headless: true,
-      args: chromeArgs,
-    });
-    
-    // Wait a moment for Chrome processes to spawn, then register them
-    // This is more reliable than trying to get PID from browser.process()
+    browser = await chromium.launch({ headless: true, args: chromeArgs });
+
     await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Find and register all Chrome processes with our job ID
     const { registerJobProcesses } = await import('./process-manager');
     const registeredCount = await registerJobProcesses(jobId);
     console.log(`[Job ${jobId}] Registered ${registeredCount} Chrome processes`);
-    
-    // Persist to database for crash recovery
-    await persistJobProcessPids(jobId);
-    
-    // Update the running job state with browser reference
-    const jobState = runningJobs.get(jobId);
-    if (jobState) {
-      jobState.browser = browser;
-    }
 
-    // Get search parameters with country support
-    const countryCode = (job as Record<string, unknown>).country as string || DEFAULT_COUNTRY_CODE;
+    await persistJobProcessPids(teamId, jobId);
+
+    const jobState = runningJobs.get(jobId);
+    if (jobState) jobState.browser = browser;
+
+    const countryCode = job.country || DEFAULT_COUNTRY_CODE;
     const countryConfig = getCountryConfig(countryCode);
     const countryName = countryConfig?.name || 'South Africa';
-    
-    const categories = job.categories.length > 0 ? job.categories : TARGET_CATEGORIES;
-    // Use country-specific cities if no locations specified
+
+    const categories = job.categories?.length > 0 ? job.categories : TARGET_CATEGORIES;
     const defaultCities = getCitiesForCountry(countryCode);
-    const locations = job.locations.length > 0 ? job.locations : (defaultCities.length > 0 ? defaultCities : SA_CITIES);
+    const locations = job.locations?.length > 0 ? job.locations : (defaultCities.length > 0 ? defaultCities : SA_CITIES);
     const minRating = job.minRating || 4.0;
-    
-    // Set country on scraper for proper browser context
+
     scraper.setCountry(countryCode);
 
-    console.log(`\n🔍 Starting AI-POWERED scraping job: ${jobId}`);
-    console.log(`   🧠 Using AI for: Business Analysis, Data Extraction, Lead Qualification`);
-    console.log(`   🌍 Country: ${countryName} (${countryCode})`);
-    console.log(`   Target: ${job.leadsRequested} lead(s)`);
-    console.log(`   Categories: ${categories.slice(0, 3).join(', ')}${categories.length > 3 ? '...' : ''}`);
-    console.log(`   Locations: ${locations.slice(0, 3).join(', ')}${locations.length > 3 ? '...' : ''}\n`);
-    
-    jobLog.success(jobId, `🚀 Starting AI-Powered Scraping Job`, {
+    jobLog.success(jobId, `Starting AI-Powered Scraping Job`, {
       target: job.leadsRequested,
       country: countryName,
       categories: categories.length,
       locations: locations.length,
       minRating,
     });
-    jobLog.info(jobId, `🧠 AI Modules: Business Analysis, Data Extraction, Lead Qualification`);
-    jobLog.info(jobId, `🌍 Country: ${countryName} (${countryCode})`);
-    jobLog.info(jobId, `📊 Target: ${job.leadsRequested} lead(s)`);
 
     // Iterate through categories and locations
     categoryLoop:
     for (const category of categories) {
-      // Check if we should stop (cancelled OR target reached) - use BOTH token and job state
-      if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
-        console.log(`🛑 Job ${jobId} stopping at category loop`);
-        jobLog.warning(jobId, 'Stopping job (cancelled or target reached)');
-        break categoryLoop;
-      }
+      if (cancellationToken.isCancelled || shouldJobStop(jobId)) break categoryLoop;
 
       for (const location of locations) {
-        // Check if we should stop (cancelled OR target reached) - use BOTH token and job state
-        if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
-          console.log(`🛑 Job ${jobId} stopping at location loop`);
-          jobLog.warning(jobId, 'Stopping job (cancelled or target reached)');
-          break categoryLoop;
-        }
+        if (cancellationToken.isCancelled || shouldJobStop(jobId)) break categoryLoop;
 
         try {
-          console.log(`\n📍 Searching: ${category} in ${location}`);
-          jobLog.progress(jobId, `📍 Searching: ${category} in ${location}`);
-          
+          jobLog.progress(jobId, `Searching: ${category} in ${location}`);
+
           const businesses = await scraper.searchBusinesses({
             query: category,
-            location: location,
+            location,
             country: countryCode,
             minRating,
-            // Only get what we need - 1 at a time for thorough AI enrichment
             maxResults: Math.min(3, job.leadsRequested - leadsFound),
           });
-          
-          // Check IMMEDIATELY after expensive async operation - use BOTH token and job state
-          if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
-            console.log(`🛑 Job ${jobId} cancelled during search - stopping immediately`);
-            jobLog.warning(jobId, '🛑 Job cancelled during search');
-            break categoryLoop;
-          }
-          
-          // Skip processing if no businesses found or job should stop
-          if (!businesses || businesses.length === 0) {
-            continue;
-          }
-          
+
+          if (cancellationToken.isCancelled || shouldJobStop(jobId)) break categoryLoop;
+          if (!businesses || businesses.length === 0) continue;
+
           jobLog.info(jobId, `Found ${businesses.length} potential businesses`);
 
           for (const business of businesses) {
-            // CRITICAL: Check cancellation at the VERY START of each business iteration
-            // This prevents processing results that came back after cancellation was triggered
-            if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
-              console.log(`🛑 Job ${jobId} stopping - cancellation detected before processing ${business.name}`);
-              jobLog.warning(jobId, '🛑 Job cancelled - stopping before processing next business');
-              break categoryLoop;
-            }
+            if (cancellationToken.isCancelled || shouldJobStop(jobId)) break categoryLoop;
 
-            jobLog.info(jobId, `Checking: ${business.name} (${business.rating}⭐)`);
+            jobLog.info(jobId, `Checking: ${business.name} (${business.rating} stars)`);
 
-            // OPTIMIZATION: Check analyzed history first (avoids re-analyzing)
             const historyCheck = await checkAnalyzedHistory(
+              teamId,
               business.googleMapsUrl,
               business.name,
               location,
               countryCode
             );
-            
-            // Check for cancellation after DB lookup - use BOTH token and job state
-            if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
-              console.log(`🛑 Job ${jobId} cancelled - stopping`);
-              break categoryLoop;
-            }
-            
+
+            if (cancellationToken.isCancelled || shouldJobStop(jobId)) break categoryLoop;
+
             if (historyCheck.wasAnalyzedBefore) {
               if (!historyCheck.isGoodProspect) {
-                console.log(`   ⏭️  Skipping (history): ${business.name} - ${historyCheck.skipReason}`);
-                jobLog.info(jobId, `⏭️ Skipping (from history): ${business.name} - ${historyCheck.skipReason}`);
+                jobLog.info(jobId, `Skipping (history): ${business.name} - ${historyCheck.skipReason}`);
                 continue;
               }
-              // Was a good prospect before - check if already converted to lead (team-scoped)
-              const existingLead = await prisma.lead.findFirst({
-                where: {
-                  teamId,
-                  OR: [
-                    { googleMapsUrl: business.googleMapsUrl },
-                    { businessName: business.name, location: location },
-                  ],
-                },
-              });
-              if (existingLead) {
-                console.log(`   ⏭️  Skipping (history): ${business.name} - Already a lead`);
-                jobLog.info(jobId, `⏭️ Skipping (from history): ${business.name} - Already a lead`);
+
+              // Check if already a lead
+              const existingSnap1 = await leadsCollection(teamId)
+                .where('googleMapsUrl', '==', business.googleMapsUrl || '__none__')
+                .limit(1)
+                .get();
+              if (!existingSnap1.empty) {
+                jobLog.info(jobId, `Skipping (history): ${business.name} - Already a lead`);
                 continue;
               }
-              // Good prospect not yet converted - continue to enrich
-              jobLog.info(jobId, `✅ Previously analyzed as good prospect: ${business.name}`);
             }
 
-            // Check if this business already exists as a lead (team-scoped)
-            const existingLead2 = await prisma.lead.findFirst({
-              where: {
-                teamId,
-                OR: [
-                  { googleMapsUrl: business.googleMapsUrl },
-                  {
-                    businessName: business.name,
-                    location: location,
-                  },
-                ],
-              },
-            });
-
-            if (existingLead2) {
-              console.log(`   ⏭️  Skipping existing: ${business.name}`);
-              jobLog.info(jobId, `⏭️ Skipping (already exists): ${business.name}`);
+            // Check if this business already exists as a lead
+            const existingSnap2 = await leadsCollection(teamId)
+              .where('businessName', '==', business.name)
+              .where('location', '==', location)
+              .limit(1)
+              .get();
+            if (!existingSnap2.empty) {
+              jobLog.info(jobId, `Skipping (already exists): ${business.name}`);
               continue;
             }
 
-            // QUALITY CHECK: Determine if this is a good prospect
-            // Step 1: Quick URL pattern check (no API call)
+            // Quality check
             const quickCheck = quickQualityCheck(business.website);
-            
             let websiteQualityScore: number | undefined;
             let isGoodProspect = quickCheck.isLikelyGoodProspect;
             let skipReason = '';
-            
+
             if (!quickCheck.isLikelyGoodProspect && business.website) {
-              // Step 2: Has proper domain - do full PageSpeed API analysis
-              console.log(`   🔍 Checking website quality for: ${business.name}`);
-              jobLog.progress(jobId, `🔍 Analyzing website quality: ${business.website}`);
-              
-              // Pass cancellation token for immediate cancellation support
+              jobLog.progress(jobId, `Analyzing website quality: ${business.website}`);
               const prospectCheck = await checkIfGoodProspect(business.website, 1, cancellationToken);
-              
-              // Check IMMEDIATELY after expensive API call (redundant but safe)
-              if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
-                console.log(`🛑 Job ${jobId} cancelled during quality check - stopping`);
-                jobLog.warning(jobId, '🛑 Job cancelled during quality check');
-                break categoryLoop;
-              }
-              
+
+              if (cancellationToken.isCancelled || shouldJobStop(jobId)) break categoryLoop;
+
               isGoodProspect = prospectCheck.isGoodProspect;
               websiteQualityScore = prospectCheck.qualityScore;
-              
+
               if (!isGoodProspect) {
                 skipReason = `Has quality website (${websiteQualityScore}/100)`;
-                console.log(`   ⏭️  Skipping ${business.name} - ${skipReason}`);
-                jobLog.info(jobId, `⏭️ Skipping ${business.name} - ${skipReason}`);
-                
-                // Save to history so we don't re-analyze next time
-                await saveToAnalyzedHistory(
-                  teamId,
-                  business,
-                  location,
-                  countryCode,
-                  false,
-                  skipReason,
-                  websiteQualityScore
-                );
-                
+                jobLog.info(jobId, `Skipping ${business.name} - ${skipReason}`);
+                await saveToAnalyzedHistory(teamId, business, location, countryCode, false, skipReason, websiteQualityScore);
                 continue;
               }
               skipReason = `Website needs improvement (${websiteQualityScore}/100)`;
-              jobLog.success(jobId, `✅ ${skipReason} - Good prospect!`);
             } else {
               websiteQualityScore = quickCheck.estimatedScore;
               skipReason = quickCheck.reason;
-              console.log(`   ✅ ${business.name} - ${quickCheck.reason} (score: ${quickCheck.estimatedScore})`);
-              jobLog.success(jobId, `✅ ${business.name} - ${quickCheck.reason} (score: ${quickCheck.estimatedScore})`);
             }
 
-            console.log(`\n   🧠 AI Enrichment starting for: ${business.name}`);
-            jobLog.progress(jobId, `🧠 Starting AI Enrichment for: ${business.name}`);
+            jobLog.progress(jobId, `AI Enrichment starting for: ${business.name}`);
 
             try {
-              // Use AI-powered smart enrichment with cancellation support
               const enrichedLead = await smartEnrichLead(
                 browser,
                 {
@@ -857,228 +698,111 @@ export async function runScrapingJob(jobId: string): Promise<void> {
                 },
                 location,
                 category,
-                1, // workerId
+                1,
                 teamId,
-                cancellationToken // Pass cancellation token for immediate stopping
+                cancellationToken
               );
 
-              // Check IMMEDIATELY after expensive AI enrichment (redundant but safe)
-              if (cancellationToken.isCancelled || shouldJobStop(jobId)) {
-                console.log(`🛑 Job ${jobId} cancelled during AI enrichment - stopping`);
-                jobLog.warning(jobId, '🛑 Job cancelled during AI enrichment');
-                break categoryLoop;
-              }
+              if (cancellationToken.isCancelled || shouldJobStop(jobId)) break categoryLoop;
 
-              // Override website quality with PageSpeed score if we have it
               if (websiteQualityScore !== undefined) {
                 enrichedLead.websiteQualityScore = websiteQualityScore;
               }
 
-              // Check if lead is qualified
               if (!enrichedLead.isQualified && enrichedLead.qualificationTier === 'D') {
-                console.log(`   ⏭️  AI determined ${business.name} is not a good prospect (Tier D)`);
-                jobLog.info(jobId, `⏭️ AI determined ${business.name} is not a good prospect (Tier D)`);
-                
-                // Save to history as not good prospect
-                await saveToAnalyzedHistory(
-                  teamId,
-                  business,
-                  location,
-                  countryCode,
-                  false,
-                  `AI disqualified (Tier D, Score: ${enrichedLead.leadScore})`,
-                  websiteQualityScore
-                );
-                
+                jobLog.info(jobId, `AI determined ${business.name} is not a good prospect (Tier D)`);
+                await saveToAnalyzedHistory(teamId, business, location, countryCode, false, `AI disqualified (Tier D)`, websiteQualityScore);
                 continue;
               }
 
-              jobLog.progress(jobId, `💾 Saving lead: ${business.name}`);
-              
-              // Save the AI-enriched lead with country and teamId
+              jobLog.progress(jobId, `Saving lead: ${business.name}`);
+
               const saved = await saveSmartEnrichedLead(enrichedLead, teamId, countryCode);
 
               if (saved) {
-                // Save to history as converted lead
-                await saveToAnalyzedHistory(
-                  teamId,
-                  business,
-                  location,
-                  countryCode,
-                  true,
-                  `Converted to lead (Tier ${enrichedLead.qualificationTier}, Score: ${enrichedLead.leadScore})`,
-                  websiteQualityScore,
-                  enrichedLead.googleMapsUrl // This will be used as reference
-                );
+                await saveToAnalyzedHistory(teamId, business, location, countryCode, true, `Converted to lead (Tier ${enrichedLead.qualificationTier})`, websiteQualityScore, enrichedLead.googleMapsUrl);
                 leadsFound++;
-                console.log(`   ✅ Saved AI-enriched lead: ${business.name}`);
-                console.log(`      📊 Score: ${enrichedLead.leadScore}/100 | Tier: ${enrichedLead.qualificationTier}`);
-                console.log(`      📞 Contacts: ${enrichedLead.phones.length} phones, ${enrichedLead.emails.length} emails`);
-                console.log(`      🎯 Action: ${enrichedLead.recommendedAction} via ${enrichedLead.recommendedChannel}`);
-                
-                jobLog.success(jobId, `🎉 LEAD SAVED: ${business.name}`, {
+
+                jobLog.success(jobId, `LEAD SAVED: ${business.name}`, {
                   score: enrichedLead.leadScore,
                   tier: enrichedLead.qualificationTier,
-                  phones: enrichedLead.phones.length,
-                  emails: enrichedLead.emails.length,
                 });
-                jobLog.info(jobId, `📊 Score: ${enrichedLead.leadScore}/100 | Tier: ${enrichedLead.qualificationTier}`);
-                jobLog.info(jobId, `📞 Contacts: ${enrichedLead.phones.length} phones, ${enrichedLead.emails.length} emails`);
-                jobLog.info(jobId, `🎯 Recommended: ${enrichedLead.recommendedAction} via ${enrichedLead.recommendedChannel}`);
-                jobLog.progress(jobId, `📈 Progress: ${leadsFound}/${job.leadsRequested} leads found`);
+                jobLog.progress(jobId, `Progress: ${leadsFound}/${job.leadsRequested} leads found`);
 
-                // Update job progress
-                await prisma.scrapingJob.update({
-                  where: { id: jobId },
-                  data: { leadsFound },
-                });
+                await scrapingJobDoc(teamId, jobId).update({ leadsFound });
 
-                // If we've reached our target, STOP IMMEDIATELY
                 if (leadsFound >= job.leadsRequested) {
-                  console.log(`\n🎯 TARGET REACHED (${leadsFound}/${job.leadsRequested})! STOPPING ALL OPERATIONS.`);
-                  jobLog.success(jobId, `🎯 TARGET REACHED! Found ${leadsFound}/${job.leadsRequested} leads. Stopping.`);
-                  markJobCompleted(jobId); // Mark as completed to stop all loops
-                  break categoryLoop; // Break out of ALL loops immediately
+                  jobLog.success(jobId, `TARGET REACHED! Found ${leadsFound}/${job.leadsRequested} leads. Stopping.`);
+                  markJobCompleted(jobId);
+                  break categoryLoop;
                 }
               }
             } catch (enrichError) {
-              // Check if it's a cancellation - break immediately
               if (enrichError instanceof JobCancelledError || cancellationToken.isCancelled) {
-                console.log(`🛑 Job ${jobId} cancelled during AI enrichment - stopping immediately`);
-                jobLog.warning(jobId, '🛑 Job cancelled during AI enrichment');
                 break categoryLoop;
               }
-              
-              console.error(`   ⚠️  AI enrichment failed for ${business.name}:`, enrichError);
-              jobLog.error(jobId, `⚠️ AI enrichment failed for ${business.name}: ${enrichError instanceof Error ? enrichError.message : 'Unknown error'}`);
-              // Continue to next business
+              jobLog.error(jobId, `AI enrichment failed for ${business.name}: ${enrichError instanceof Error ? enrichError.message : 'Unknown error'}`);
             }
 
-            // OPTIMIZED: Reduced delay between leads (was 3000ms) with cancellation support
             try {
               await sleepWithCancellation(1000, cancellationToken);
             } catch (sleepError) {
-              if (sleepError instanceof JobCancelledError || cancellationToken.isCancelled) {
-                console.log(`🛑 Job ${jobId} cancelled during delay - stopping immediately`);
-                break categoryLoop;
-              }
+              if (sleepError instanceof JobCancelledError || cancellationToken.isCancelled) break categoryLoop;
             }
           }
         } catch (error) {
-          // Check for cancellation errors first
-          if (error instanceof JobCancelledError || cancellationToken.isCancelled) {
-            console.log(`🛑 Job ${jobId} cancelled - stopping immediately`);
-            jobLog.warning(jobId, '🛑 Job cancelled - stopping immediately');
-            break categoryLoop;
-          }
-          
+          if (error instanceof JobCancelledError || cancellationToken.isCancelled) break categoryLoop;
+
           const errorMessage = error instanceof Error ? error.message : String(error);
-          
-          // If browser was closed (cancelled), break out immediately
-          if (errorMessage === 'BROWSER_CLOSED' || shouldJobStop(jobId)) {
-            console.log(`🛑 Job ${jobId} stopping - browser closed or cancelled`);
-            jobLog.warning(jobId, '🛑 Stopping job - browser closed or cancelled');
-            break categoryLoop;
-          }
-          
-          console.error(`   ❌ Error searching ${category} in ${location}:`, errorMessage);
-          jobLog.error(jobId, `❌ Error searching ${category} in ${location}: ${errorMessage}`);
+          if (errorMessage === 'BROWSER_CLOSED' || shouldJobStop(jobId)) break categoryLoop;
+
+          jobLog.error(jobId, `Error searching ${category} in ${location}: ${errorMessage}`);
         }
       }
     }
 
-    // Mark job as completed in database (unless it was cancelled by user)
-    // Check BOTH isJobCancelled AND cancellationToken since cancelJob might have run
+    // Mark job as completed (unless cancelled)
     const wasCancelled = isJobCancelled(jobId) || cancellationToken.isCancelled;
     if (!wasCancelled) {
-      // Double-check the current status in DB to avoid race conditions
-      const currentJob = await prisma.scrapingJob.findUnique({
-        where: { id: jobId },
-        select: { status: true, completedAt: true },
-      });
-      
-      // Only update to COMPLETED if still RUNNING (not already completed by cancelJob)
-      if (currentJob && currentJob.status === JobStatus.RUNNING) {
-        await prisma.scrapingJob.update({
-          where: { id: jobId },
-          data: {
-            status: JobStatus.COMPLETED,
-            completedAt: new Date(),
-            leadsFound,
-          },
-        });
+      const currentSnap = await scrapingJobDoc(teamId, jobId).get();
+      const currentStatus = currentSnap.exists ? (currentSnap.data()!.status as string) : null;
 
-        console.log(`\n✅ AI-Powered Job completed! Found ${leadsFound}/${job.leadsRequested} qualified lead(s)`);
-        jobLog.success(jobId, `✅ Job completed! Found ${leadsFound}/${job.leadsRequested} qualified lead(s)`);
-      } else {
-        // Job was already completed (likely by cancelJob)
-        console.log(`\n🛑 Job ${jobId} status is already ${currentJob?.status} - not updating`);
-        jobLog.warning(jobId, `🛑 Job already ${currentJob?.status} - skipping update`);
+      if (currentStatus === 'RUNNING') {
+        await scrapingJobDoc(teamId, jobId).update({
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          leadsFound,
+        });
+        jobLog.success(jobId, `Job completed! Found ${leadsFound}/${job.leadsRequested} qualified lead(s)`);
       }
-    } else {
-      // Job was cancelled - cancelJob already set status to COMPLETED
-      console.log(`\n🛑 Job ${jobId} was cancelled by user. Found ${leadsFound} leads before cancellation.`);
-      jobLog.warning(jobId, `🛑 Job cancelled by user. Found ${leadsFound} leads before cancellation.`);
     }
 
   } catch (error) {
-    // Handle cancellation errors gracefully
     if (error instanceof JobCancelledError || cancellationToken.isCancelled) {
-      console.log(`🛑 Job ${jobId} cancelled gracefully`);
-      jobLog.warning(jobId, '🛑 Job cancelled gracefully');
-      // Don't update DB - cancelJob already set status to COMPLETED
+      jobLog.warning(jobId, 'Job cancelled gracefully');
     } else if (!isJobCancelled(jobId) && !cancellationToken.isCancelled) {
-      // Don't update status if job was cancelled (already handled)
-      console.error(`Job ${jobId} failed:`, error);
-      jobLog.error(jobId, `❌ Job failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      await prisma.scrapingJob.update({
-        where: { id: jobId },
-        data: {
-          status: JobStatus.FAILED,
-          completedAt: new Date(),
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
+      jobLog.error(jobId, `Job failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      await scrapingJobDoc(teamId, jobId).update({
+        status: 'FAILED',
+        completedAt: new Date(),
+        error: error instanceof Error ? error.message : 'Unknown error',
       });
-    } else {
-      // Job was cancelled - don't update DB, cancelJob already did it
-      console.log(`🛑 Job ${jobId} was cancelled - skipping status update in error handler`);
     }
   } finally {
-    // Clean up resources
-    jobLog.info(jobId, '🧹 Cleaning up resources...');
-    
-    // Remove cancellation token
+    jobLog.info(jobId, 'Cleaning up resources...');
     removeCancellationToken(jobId);
-    console.log(`[Job ${jobId}] Cancellation token removed`);
-    
-    // First, try graceful close
-    try {
-      await scraper.close();
-    } catch {
-      // Ignore close errors
-    }
-    if (browser) {
-      try {
-        await browser.close();
-      } catch {
-        // Ignore close errors
-      }
-    }
-    
-    // SAFE KILL: Use killJobProcesses which validates each process before killing
-    // This ensures we don't accidentally kill processes from other applications
+
+    try { await scraper.close(); } catch {}
+    if (browser) { try { await browser.close(); } catch {} }
+
     const killResult = await killJobProcesses(jobId);
-    if (killResult.killed > 0 || killResult.refused > 0 || killResult.notFound > 0) {
-      console.log(`[Job ${jobId}] Process cleanup: killed=${killResult.killed}, refused=${killResult.refused}, notFound=${killResult.notFound}`);
+    if (killResult.killed > 0) {
+      console.log(`[Job ${jobId}] Process cleanup: killed=${killResult.killed}`);
     }
-    
-    // Clear persisted PIDs from database
-    await clearPersistedProcessPids(jobId);
-    
-    // Remove from running jobs registry
+
+    await clearPersistedProcessPids(teamId, jobId);
     runningJobs.delete(jobId);
-    console.log(`🏁 Job ${jobId} cleanup complete`);
-    jobLog.info(jobId, '🏁 Job cleanup complete');
+    jobLog.info(jobId, 'Job cleanup complete');
   }
 }
 
@@ -1092,90 +816,105 @@ export async function scheduleScrapingJob(options: {
   minRating?: number;
   scheduledFor?: Date;
 }): Promise<string> {
-  const job = await prisma.scrapingJob.create({
-    data: {
-      teamId: options.teamId,
-      leadsRequested: options.leadsRequested,
-      categories: options.categories || [],
-      locations: options.locations || [],
-      country: options.country || DEFAULT_COUNTRY_CODE,
-      minRating: options.minRating,
-      scheduledFor: options.scheduledFor || new Date(),
-      status: JobStatus.SCHEDULED,
-    },
+  const now = new Date();
+  const docRef = scrapingJobsCollection(options.teamId).doc();
+
+  await docRef.set({
+    status: 'SCHEDULED',
+    leadsRequested: options.leadsRequested,
+    leadsFound: 0,
+    searchQuery: null,
+    categories: options.categories || [],
+    locations: options.locations || [],
+    country: options.country || DEFAULT_COUNTRY_CODE,
+    minRating: options.minRating || null,
+    maxRadius: null,
+    scheduledFor: options.scheduledFor || now,
+    startedAt: null,
+    completedAt: null,
+    error: null,
+    processPids: null,
+    createdAt: now,
+    updatedAt: now,
   });
 
-  return job.id;
+  return docRef.id;
 }
 
-// Get pending jobs
+// Get pending jobs (across all teams - for scheduler cron)
 export async function getPendingJobs() {
-  return prisma.scrapingJob.findMany({
-    where: {
-      status: JobStatus.SCHEDULED,
-      scheduledFor: {
-        lte: new Date(),
-      },
-    },
-    orderBy: {
-      scheduledFor: 'asc',
-    },
-  });
+  // This needs to search across all teams, which requires a collection group query
+  // For now, we use the admin SDK to query the scrapingJobs subcollection group
+  const snapshot = await adminDb.collectionGroup('scrapingJobs')
+    .where('status', '==', 'SCHEDULED')
+    .where('scheduledFor', '<=', new Date())
+    .orderBy('scheduledFor', 'asc')
+    .get();
+
+  return snapshot.docs.map(d => ({ id: d.id, ...d.data(), _teamId: d.ref.parent.parent?.id }));
 }
 
 // Generate messages for new leads (team-scoped)
 export async function generateMessagesForNewLeads(teamId: string): Promise<number> {
-  const settings = await prisma.teamSettings.findUnique({
-    where: { teamId },
-  });
+  const settingsSnap = await teamSettingsDoc(teamId).get();
+  const settings = settingsSnap.exists ? settingsSnap.data()! : null;
 
   if (!settings?.autoGenerateMessages) {
     return 0;
   }
 
-  const newLeads = await prisma.lead.findMany({
-    where: {
-      teamId,
-      status: LeadStatus.NEW,
-      messages: {
-        none: {},
-      },
-    },
-    take: 10,
-  });
+  // Get NEW leads
+  const leadsSnap = await leadsCollection(teamId)
+    .where('status', '==', 'NEW')
+    .limit(10)
+    .get();
 
   let generated = 0;
 
-  for (const lead of newLeads) {
+  for (const doc of leadsSnap.docs) {
+    const leadData = doc.data();
+    const lead = { id: doc.id, ...leadData } as Lead;
+
+    // Check if lead already has messages
+    const msgSnap = await messagesCollection(teamId)
+      .where('leadId', '==', doc.id)
+      .limit(1)
+      .get();
+
+    if (!msgSnap.empty) continue; // Already has messages
+
     try {
-      // Generate email message if email available
       if (lead.email) {
         const emailMessage = await generatePersonalizedMessage({
           teamId,
           lead,
         });
 
-        await prisma.message.create({
-          data: {
-            teamId,
-            leadId: lead.id,
-            type: 'EMAIL',
-            subject: emailMessage.subject,
-            content: emailMessage.content,
-            status: 'DRAFT',
-          },
+        const now = new Date();
+        await messagesCollection(teamId).doc().set({
+          leadId: doc.id,
+          type: 'EMAIL',
+          subject: emailMessage.subject || null,
+          content: emailMessage.content,
+          status: 'DRAFT',
+          sentAt: null,
+          error: null,
+          generatedBy: null,
+          aiProvider: null,
+          aiModel: null,
+          createdAt: now,
+          updatedAt: now,
         });
       }
 
-      // Update lead status
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: { status: LeadStatus.MESSAGE_READY },
+      await leadDoc(teamId, doc.id).update({
+        status: 'MESSAGE_READY',
+        updatedAt: new Date(),
       });
 
       generated++;
     } catch (error) {
-      console.error(`Failed to generate message for lead ${lead.id}:`, error);
+      console.error(`Failed to generate message for lead ${doc.id}:`, error);
     }
   }
 

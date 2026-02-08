@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useStatsRealtime } from '@/hooks/use-realtime';
 import { formatDate, leadStatusLabels } from '@/lib/utils';
-import { LeadStatus } from '@prisma/client';
+import { LeadStatus } from '@/types';
 import {
   Calendar,
   MessageSquare,

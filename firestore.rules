@@ -1,0 +1,29 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Deny all access by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Users collection - users can read their own doc
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false; // Managed by Admin SDK only
+    }
+
+    // Teams collection
+    match /teams/{teamId} {
+      // Team members can read team doc
+      allow read: if request.auth != null && request.auth.token.teamId == teamId;
+      allow write: if false; // Managed by Admin SDK only
+
+      // All subcollections under a team are scoped to team members
+      match /{subcollection}/{docId} {
+        allow read: if request.auth != null && request.auth.token.teamId == teamId;
+        allow write: if false; // Managed by Admin SDK only
+      }
+    }
+  }
+}

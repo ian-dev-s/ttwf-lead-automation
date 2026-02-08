@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { teamSettingsDoc, serverTimestamp, stripUndefined } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -19,19 +19,22 @@ export async function GET(_request: NextRequest) {
 
     const teamId = session.user.teamId;
 
-    const settings = await prisma.teamSettings.findUnique({
-      where: { teamId },
-      select: {
-        aiTone: true,
-        aiWritingStyle: true,
-        aiCustomInstructions: true,
-      },
-    });
+    const docRef = teamSettingsDoc(teamId);
+    const docSnap = await docRef.get();
 
-    return NextResponse.json(settings || {
-      aiTone: null,
-      aiWritingStyle: null,
-      aiCustomInstructions: null,
+    if (!docSnap.exists) {
+      return NextResponse.json({
+        aiTone: null,
+        aiWritingStyle: null,
+        aiCustomInstructions: null,
+      });
+    }
+
+    const data = docSnap.data() || {};
+    return NextResponse.json({
+      aiTone: data.aiTone ?? null,
+      aiWritingStyle: data.aiWritingStyle ?? null,
+      aiCustomInstructions: data.aiCustomInstructions ?? null,
     });
   } catch (error) {
     console.error('Error fetching AI training config:', error);
@@ -55,22 +58,22 @@ export async function PATCH(request: NextRequest) {
     const body = await request.json();
     const data = updateTrainingSchema.parse(body);
 
-    const settings = await prisma.teamSettings.upsert({
-      where: { teamId },
-      update: data,
-      create: {
-        teamId,
-        ...data,
-        targetIndustries: [],
-        targetCities: [],
-        blacklistedIndustries: [],
-      },
+    const docRef = teamSettingsDoc(teamId);
+    const updatePayload = stripUndefined({
+      ...data,
+      updatedAt: serverTimestamp(),
     });
 
+    // Upsert: set with merge
+    await docRef.set(updatePayload, { merge: true });
+
+    const updatedDoc = await docRef.get();
+    const settings = updatedDoc.data()!;
+
     return NextResponse.json({
-      aiTone: settings.aiTone,
-      aiWritingStyle: settings.aiWritingStyle,
-      aiCustomInstructions: settings.aiCustomInstructions,
+      aiTone: settings.aiTone ?? null,
+      aiWritingStyle: settings.aiWritingStyle ?? null,
+      aiCustomInstructions: settings.aiCustomInstructions ?? null,
     });
   } catch (error) {
     if (error instanceof z.ZodError) {

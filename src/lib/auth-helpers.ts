@@ -1,4 +1,4 @@
-import { auth } from './auth';
+import { auth, type Session } from './auth';
 
 /**
  * Get the teamId from the current session.
@@ -19,7 +19,7 @@ export async function getTeamId(): Promise<string> {
  * Get the full authenticated session with teamId.
  * Returns null if not authenticated.
  */
-export async function getAuthSession() {
+export async function getAuthSession(): Promise<Session | null> {
   const session = await auth();
   if (!session?.user) return null;
   return session;
@@ -29,7 +29,7 @@ export async function getAuthSession() {
  * Require authentication and return session.
  * Throws if not authenticated.
  */
-export async function requireAuth() {
+export async function requireAuth(): Promise<Session> {
   const session = await auth();
   if (!session?.user) {
     throw new Error('Unauthorized');

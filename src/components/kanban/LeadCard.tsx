@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { cn, formatPhoneNumber, getWhatsAppUrl } from '@/lib/utils';
 import { Draggable } from '@hello-pangea/dnd';
-import { Lead } from '@prisma/client';
+import { Lead } from '@/types';
 import {
     CheckCircle,
     ExternalLink,

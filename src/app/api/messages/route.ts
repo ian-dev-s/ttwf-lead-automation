@@ -1,19 +1,21 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
-import { MessageStatus, MessageType } from '@prisma/client';
+import { messagesCollection, leadDoc } from '@/lib/firebase/collections';
+import { MessageStatus, MessageType } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
-// Validation schema for creating a message
+const MSG_STATUS_VALUES = Object.values(MessageStatus) as [string, ...string[]];
+const MSG_TYPE_VALUES = Object.values(MessageType) as [string, ...string[]];
+
 const createMessageSchema = z.object({
   leadId: z.string().min(1, 'Lead ID is required'),
-  type: z.nativeEnum(MessageType),
+  type: z.enum(MSG_TYPE_VALUES),
   subject: z.string().optional(),
   content: z.string().min(1, 'Content is required'),
-  status: z.nativeEnum(MessageStatus).optional(),
+  status: z.enum(MSG_STATUS_VALUES).optional(),
 });
 
-// GET /api/messages - Get messages with optional filtering
+// GET /api/messages
 export async function GET(request: NextRequest) {
   try {
     const session = await auth();
@@ -23,50 +25,50 @@ export async function GET(request: NextRequest) {
 
     const teamId = session.user.teamId;
     const searchParams = request.nextUrl.searchParams;
-    const status = searchParams.get('status') as MessageStatus | null;
-    const type = searchParams.get('type') as MessageType | null;
+    const status = searchParams.get('status');
+    const type = searchParams.get('type');
     const leadId = searchParams.get('leadId');
     const page = parseInt(searchParams.get('page') || '1');
     const limit = parseInt(searchParams.get('limit') || '20');
 
-    // Build where clause
-    const where: any = {
-      teamId,
-    };
-    
-    if (status) {
-      where.status = status;
-    }
-    
-    if (type) {
-      where.type = type;
-    }
-    
-    if (leadId) {
-      where.leadId = leadId;
-    }
+    let query: FirebaseFirestore.Query<any> = messagesCollection(teamId);
 
-    // Get total count
-    const total = await prisma.message.count({ where });
+    if (status) query = query.where('status', '==', status);
+    if (type) query = query.where('type', '==', type);
+    if (leadId) query = query.where('leadId', '==', leadId);
 
-    // Get messages with lead details
-    const messages = await prisma.message.findMany({
-      where,
-      include: {
-        lead: {
-          select: {
-            id: true,
-            businessName: true,
-            phone: true,
-            email: true,
-            location: true,
-          },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    // Count
+    const countSnap = await query.count().get();
+    const total = countSnap.data().count;
+
+    // Fetch with pagination
+    const snapshot = await query
+      .orderBy('createdAt', 'desc')
+      .offset((page - 1) * limit)
+      .limit(limit)
+      .get();
+
+    // Attach lead details
+    const messages = await Promise.all(
+      snapshot.docs.map(async (doc) => {
+        const data = doc.data();
+        let lead = null;
+        if (data.leadId) {
+          const leadSnap = await leadDoc(teamId, data.leadId as string).get();
+          if (leadSnap.exists) {
+            const ld = leadSnap.data()!;
+            lead = {
+              id: leadSnap.id,
+              businessName: ld.businessName,
+              phone: ld.phone,
+              email: ld.email,
+              location: ld.location,
+            };
+          }
+        }
+        return { id: doc.id, ...data, lead };
+      })
+    );
 
     return NextResponse.json({
       data: messages,
@@ -77,14 +79,11 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error('Error fetching messages:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch messages' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to fetch messages' }, { status: 500 });
   }
 }
 
-// POST /api/messages - Create a new message
+// POST /api/messages
 export async function POST(request: NextRequest) {
   try {
     const session = await auth();
@@ -93,10 +92,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (session.user.role === 'VIEWER') {
-      return NextResponse.json(
-        { error: 'Insufficient permissions' },
-        { status: 403 }
-      );
+      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
 
     const teamId = session.user.teamId;
@@ -104,40 +100,42 @@ export async function POST(request: NextRequest) {
     const validatedData = createMessageSchema.parse(body);
 
     // Verify lead exists
-    const lead = await prisma.lead.findFirst({
-      where: { id: validatedData.leadId, teamId },
-    });
-
-    if (!lead) {
+    const leadSnap = await leadDoc(teamId, validatedData.leadId).get();
+    if (!leadSnap.exists) {
       return NextResponse.json({ error: 'Lead not found' }, { status: 404 });
     }
 
-    const message = await prisma.message.create({
-      data: {
-        leadId: validatedData.leadId,
-        teamId,
-        type: validatedData.type,
-        subject: validatedData.subject,
-        content: validatedData.content,
-        status: validatedData.status || MessageStatus.DRAFT,
-      },
-      include: {
-        lead: true,
-      },
-    });
+    const now = new Date();
+    const messageData = {
+      leadId: validatedData.leadId,
+      type: validatedData.type,
+      subject: validatedData.subject || null,
+      content: validatedData.content,
+      status: validatedData.status || 'DRAFT',
+      sentAt: null,
+      error: null,
+      generatedBy: null,
+      aiProvider: null,
+      aiModel: null,
+      createdAt: now,
+      updatedAt: now,
+    };
 
-    return NextResponse.json(message, { status: 201 });
+    const docRef = messagesCollection(teamId).doc();
+    await docRef.set(messageData);
+
+    const leadData = leadSnap.data()!;
+    const lead = { id: leadSnap.id, ...leadData };
+
+    return NextResponse.json(
+      { id: docRef.id, ...messageData, lead },
+      { status: 201 }
+    );
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        { error: 'Validation failed', details: error.errors },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Validation failed', details: error.errors }, { status: 400 });
     }
     console.error('Error creating message:', error);
-    return NextResponse.json(
-      { error: 'Failed to create message' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to create message' }, { status: 500 });
   }
 }

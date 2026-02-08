@@ -1,5 +1,6 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { emailTemplatesCollection, emailTemplateDoc } from '@/lib/firebase/collections';
+import { adminDb } from '@/lib/firebase/admin';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -33,15 +34,13 @@ export async function GET(
     const { id } = await params;
     const teamId = session.user.teamId;
 
-    const template = await prisma.emailTemplate.findFirst({
-      where: { id, teamId },
-    });
+    const templateDoc = await emailTemplateDoc(teamId, id).get();
 
-    if (!template) {
+    if (!templateDoc.exists) {
       return NextResponse.json({ error: 'Template not found' }, { status: 404 });
     }
 
-    return NextResponse.json(template);
+    return NextResponse.json({ id: templateDoc.id, ...templateDoc.data() });
   } catch (error) {
     console.error('Error fetching template:', error);
     return NextResponse.json(
@@ -75,33 +74,38 @@ export async function PATCH(
     const validatedData = updateTemplateSchema.parse(body);
 
     // Get current template to check purpose if isDefault is being set
-    const currentTemplate = await prisma.emailTemplate.findFirst({
-      where: { id, teamId },
-    });
+    const currentTemplateDoc = await emailTemplateDoc(teamId, id).get();
 
-    if (!currentTemplate) {
+    if (!currentTemplateDoc.exists) {
       return NextResponse.json({ error: 'Template not found' }, { status: 404 });
     }
 
+    const currentTemplate = currentTemplateDoc.data()!;
+
     // If isDefault is being set to true, unset isDefault on all other templates with the same purpose
     if (validatedData.isDefault === true) {
+      const batch = adminDb.batch();
       const purpose = validatedData.purpose ?? currentTemplate.purpose;
-      await prisma.emailTemplate.updateMany({
-        where: {
-          teamId,
-          purpose,
-          isDefault: true,
-          id: { not: id },
-        },
-        data: {
-          isDefault: false,
-        },
+      const existingSnapshot = await emailTemplatesCollection(teamId)
+        .where('purpose', '==', purpose)
+        .where('isDefault', '==', true)
+        .get();
+
+      existingSnapshot.docs.forEach(doc => {
+        if (doc.id !== id) {
+          batch.update(doc.ref, { isDefault: false });
+        }
       });
+
+      await batch.commit();
     }
 
     // Prepare update data
-    const updateData: any = { ...validatedData };
-    
+    const updateData: Record<string, unknown> = {
+      ...validatedData,
+      updatedAt: new Date(),
+    };
+
     // Handle nullable fields - only set to null if explicitly provided as null/empty
     if ('description' in body) {
       updateData.description = validatedData.description ?? null;
@@ -119,12 +123,10 @@ export async function PATCH(
       updateData.maxLength = validatedData.maxLength ?? null;
     }
 
-    const template = await prisma.emailTemplate.update({
-      where: { id },
-      data: updateData,
-    });
+    await emailTemplateDoc(teamId, id).update(updateData);
 
-    return NextResponse.json(template);
+    const updatedDoc = await emailTemplateDoc(teamId, id).get();
+    return NextResponse.json({ id: updatedDoc.id, ...updatedDoc.data() });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
@@ -162,24 +164,21 @@ export async function DELETE(
     const teamId = session.user.teamId;
 
     // Get the template to check its purpose and if it's default
-    const template = await prisma.emailTemplate.findFirst({
-      where: { id, teamId },
-    });
+    const templateDoc = await emailTemplateDoc(teamId, id).get();
 
-    if (!template) {
+    if (!templateDoc.exists) {
       return NextResponse.json({ error: 'Template not found' }, { status: 404 });
     }
 
-    // Check if this is the last active template for this purpose
-    const activeTemplatesForPurpose = await prisma.emailTemplate.count({
-      where: {
-        teamId,
-        purpose: template.purpose,
-        isActive: true,
-      },
-    });
+    const template = templateDoc.data()!;
 
-    if (template.isActive && activeTemplatesForPurpose === 1) {
+    // Check if this is the last active template for this purpose
+    const activeTemplatesSnapshot = await emailTemplatesCollection(teamId)
+      .where('purpose', '==', template.purpose)
+      .where('isActive', '==', true)
+      .get();
+
+    if (template.isActive && activeTemplatesSnapshot.docs.length === 1) {
       return NextResponse.json(
         { error: 'Cannot delete the last active template for this purpose' },
         { status: 400 }
@@ -188,27 +187,18 @@ export async function DELETE(
 
     // If deleting the default template for a purpose, set the next available active template as default
     if (template.isDefault) {
-      const nextActiveTemplate = await prisma.emailTemplate.findFirst({
-        where: {
-          teamId,
-          purpose: template.purpose,
-          isActive: true,
-          id: { not: id },
-        },
-        orderBy: { createdAt: 'asc' },
-      });
+      const nextActiveSnapshot = await emailTemplatesCollection(teamId)
+        .where('purpose', '==', template.purpose)
+        .where('isActive', '==', true)
+        .get();
 
-      if (nextActiveTemplate) {
-        await prisma.emailTemplate.update({
-          where: { id: nextActiveTemplate.id },
-          data: { isDefault: true },
-        });
+      const nextActive = nextActiveSnapshot.docs.find(doc => doc.id !== id);
+      if (nextActive) {
+        await nextActive.ref.update({ isDefault: true });
       }
     }
 
-    await prisma.emailTemplate.delete({
-      where: { id },
-    });
+    await emailTemplateDoc(teamId, id).delete();
 
     return NextResponse.json({ success: true });
   } catch (error) {

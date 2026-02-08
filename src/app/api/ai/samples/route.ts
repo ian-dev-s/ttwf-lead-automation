@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { aiSampleResponsesCollection, serverTimestamp, stripUndefined } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -22,13 +22,19 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const category = searchParams.get('category');
 
-    const samples = await prisma.aISampleResponse.findMany({
-      where: {
-        teamId,
-        ...(category ? { category } : {}),
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const snapshot = await aiSampleResponsesCollection(teamId)
+      .orderBy('createdAt', 'desc')
+      .get();
+
+    let samples = snapshot.docs.map(d => ({
+      id: d.id,
+      ...d.data(),
+    }));
+
+    // Filter by category client-side (Firestore requires composite index for where + orderBy on different fields)
+    if (category) {
+      samples = samples.filter(sample => sample.category === category);
+    }
 
     return NextResponse.json(samples);
   } catch (error) {
@@ -53,12 +59,22 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const data = createSampleSchema.parse(body);
 
-    const sample = await prisma.aISampleResponse.create({
-      data: {
-        ...data,
-        teamId,
-      },
+    const sampleData = stripUndefined({
+      teamId,
+      customerQuestion: data.customerQuestion,
+      preferredResponse: data.preferredResponse,
+      category: data.category ?? null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
     });
+
+    const docRef = aiSampleResponsesCollection(teamId).doc();
+    await docRef.set(sampleData);
+
+    const sample = {
+      id: docRef.id,
+      ...sampleData,
+    };
 
     return NextResponse.json(sample, { status: 201 });
   } catch (error) {

@@ -1,7 +1,9 @@
 import { Sidebar } from '@/components/layout/Sidebar';
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { teamsCollection } from '@/lib/firebase/collections';
 import { redirect } from 'next/navigation';
+
+export const dynamic = 'force-dynamic';
 
 export default async function DashboardLayout({
   children,
@@ -9,8 +11,8 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   // Check if initial setup is needed (no teams exist)
-  const teamCount = await prisma.team.count();
-  if (teamCount === 0) {
+  const teamsSnapshot = await teamsCollection().limit(1).get();
+  if (teamsSnapshot.empty) {
     redirect('/setup');
   }
 

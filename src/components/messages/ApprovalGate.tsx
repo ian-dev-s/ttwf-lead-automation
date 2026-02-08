@@ -18,7 +18,7 @@ import {
     TooltipProvider,
     TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { Lead, Message } from '@prisma/client';
+import { Lead, Message } from '@/types';
 import {
     AlertTriangle,
     Bot,

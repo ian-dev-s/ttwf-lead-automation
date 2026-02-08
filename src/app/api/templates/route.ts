@@ -1,5 +1,6 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { emailTemplatesCollection } from '@/lib/firebase/collections';
+import { adminDb } from '@/lib/firebase/admin';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -32,19 +33,20 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const purpose = searchParams.get('purpose');
 
-    // Build where clause
-    const where: any = { teamId };
+    // Build query - apply where first, then orderBy
+    let query: FirebaseFirestore.Query<any> = emailTemplatesCollection(teamId);
+    
     if (purpose) {
-      where.purpose = purpose;
+      query = query.where('purpose', '==', purpose).orderBy('name', 'asc');
+    } else {
+      query = query.orderBy('purpose', 'asc').orderBy('name', 'asc');
     }
 
-    const templates = await prisma.emailTemplate.findMany({
-      where,
-      orderBy: [
-        { purpose: 'asc' },
-        { name: 'asc' },
-      ],
-    });
+    const snapshot = await query.get();
+    const templates = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
 
     return NextResponse.json(templates);
   } catch (error) {
@@ -75,40 +77,44 @@ export async function POST(request: NextRequest) {
     const validatedData = createTemplateSchema.parse(body);
 
     const teamId = session.user.teamId;
+    const now = new Date();
 
     // If isDefault is true, unset isDefault on all other templates with the same purpose
     if (validatedData.isDefault) {
-      await prisma.emailTemplate.updateMany({
-        where: {
-          teamId,
-          purpose: validatedData.purpose,
-          isDefault: true,
-        },
-        data: {
-          isDefault: false,
-        },
+      const batch = adminDb.batch();
+      const existingSnapshot = await emailTemplatesCollection(teamId)
+        .where('purpose', '==', validatedData.purpose)
+        .where('isDefault', '==', true)
+        .get();
+
+      existingSnapshot.docs.forEach(doc => {
+        batch.update(doc.ref, { isDefault: false });
       });
+
+      await batch.commit();
     }
 
-    const template = await prisma.emailTemplate.create({
-      data: {
-        teamId,
-        name: validatedData.name,
-        description: validatedData.description ?? null,
-        purpose: validatedData.purpose,
-        systemPrompt: validatedData.systemPrompt,
-        bodyTemplate: validatedData.bodyTemplate ?? null,
-        subjectLine: validatedData.subjectLine ?? null,
-        isActive: validatedData.isActive ?? false,
-        isDefault: validatedData.isDefault ?? false,
-        tone: validatedData.tone ?? null,
-        maxLength: validatedData.maxLength ?? null,
-        mustInclude: validatedData.mustInclude ?? [],
-        avoidTopics: validatedData.avoidTopics ?? [],
-      },
-    });
+    const templateRef = emailTemplatesCollection(teamId).doc();
+    const templateData = {
+      name: validatedData.name,
+      description: validatedData.description ?? null,
+      purpose: validatedData.purpose,
+      systemPrompt: validatedData.systemPrompt,
+      bodyTemplate: validatedData.bodyTemplate ?? null,
+      subjectLine: validatedData.subjectLine ?? null,
+      isActive: validatedData.isActive ?? false,
+      isDefault: validatedData.isDefault ?? false,
+      tone: validatedData.tone ?? null,
+      maxLength: validatedData.maxLength ?? null,
+      mustInclude: validatedData.mustInclude ?? [],
+      avoidTopics: validatedData.avoidTopics ?? [],
+      createdAt: now,
+      updatedAt: now,
+    };
 
-    return NextResponse.json(template, { status: 201 });
+    await templateRef.set(templateData);
+
+    return NextResponse.json({ id: templateRef.id, ...templateData }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(

@@ -1,5 +1,5 @@
 import { createOpenAI } from '@ai-sdk/openai';
-import { prisma } from '@/lib/db';
+import { teamApiKeysCollection } from '@/lib/firebase/collections';
 import { decrypt, maskSecret } from '@/lib/crypto';
 
 // Re-export client-safe constants
@@ -29,22 +29,21 @@ export const providerConfigs: Record<SimpleProvider, {
 };
 
 /**
- * Get the decrypted API key for a provider from the database.
+ * Get the decrypted API key for a provider from Firestore.
  */
 export async function getProviderApiKey(teamId: string, provider: string): Promise<string | null> {
-  const apiKey = await prisma.teamApiKey.findFirst({
-    where: {
-      teamId,
-      provider,
-      isActive: true,
-    },
-    select: { encryptedKey: true },
-  });
+  const snapshot = await teamApiKeysCollection(teamId)
+    .where('provider', '==', provider)
+    .where('isActive', '==', true)
+    .limit(1)
+    .get();
 
-  if (!apiKey) return null;
+  if (snapshot.empty) return null;
+
+  const apiKeyDoc = snapshot.docs[0].data();
 
   try {
-    return decrypt(apiKey.encryptedKey);
+    return decrypt(apiKeyDoc.encryptedKey);
   } catch {
     console.error(`Failed to decrypt API key for provider ${provider}`);
     return null;
@@ -52,7 +51,7 @@ export async function getProviderApiKey(teamId: string, provider: string): Promi
 }
 
 /**
- * Get provider instance using team's API key from the database.
+ * Get provider instance using team's API key from Firestore.
  */
 export async function getProvider(teamId: string, provider: SimpleProvider) {
   const config = providerConfigs[provider];
@@ -80,15 +79,12 @@ export async function getLanguageModel(teamId: string, config: ProviderConfig) {
  * Check if a provider is available (has API key configured) for a team.
  */
 export async function isProviderAvailable(teamId: string, provider: string): Promise<boolean> {
-  const apiKey = await prisma.teamApiKey.findFirst({
-    where: {
-      teamId,
-      provider,
-      isActive: true,
-    },
-    select: { id: true },
-  });
-  return !!apiKey;
+  const snapshot = await teamApiKeysCollection(teamId)
+    .where('provider', '==', provider)
+    .where('isActive', '==', true)
+    .limit(1)
+    .get();
+  return !snapshot.empty;
 }
 
 /**
@@ -103,14 +99,10 @@ export async function getMaskedToken(teamId: string, provider: string): Promise<
  * Get all available providers for a team.
  */
 export async function getAvailableProviders(teamId: string): Promise<string[]> {
-  const keys = await prisma.teamApiKey.findMany({
-    where: {
-      teamId,
-      isActive: true,
-    },
-    select: { provider: true },
-  });
-  return keys.map(k => k.provider);
+  const snapshot = await teamApiKeysCollection(teamId)
+    .where('isActive', '==', true)
+    .get();
+  return snapshot.docs.map(d => d.data().provider);
 }
 
 /**
@@ -129,4 +121,3 @@ export async function getProviderStatus(teamId: string, provider: SimpleProvider
     setupUrl: config.setupUrl,
   };
 }
-

@@ -1,6 +1,6 @@
-// Server-side only - Email configuration from TeamSettings (database-backed)
+// Server-side only - Email configuration from TeamSettings (Firestore-backed)
 
-import { prisma } from '@/lib/db';
+import { teamSettingsDoc } from '@/lib/firebase/collections';
 import { decryptIfPresent, maskSecret } from '@/lib/crypto';
 
 export interface SmtpConfig {
@@ -31,23 +31,12 @@ export interface ImapConfig {
 }
 
 /**
- * Get email config for a team from the database.
+ * Get email config for a team from Firestore.
  * Decrypts SMTP credentials from TeamSettings.
  */
 export async function getEmailConfig(teamId: string): Promise<EmailConfig> {
-  const settings = await prisma.teamSettings.findUnique({
-    where: { teamId },
-    select: {
-      smtpHost: true,
-      smtpPort: true,
-      smtpSecure: true,
-      smtpUser: true,
-      smtpPass: true,
-      emailFrom: true,
-      emailDebugMode: true,
-      emailDebugAddress: true,
-    },
-  });
+  const settingsSnap = await teamSettingsDoc(teamId).get();
+  const settings = settingsSnap.exists ? settingsSnap.data()! : null;
 
   const host = settings?.smtpHost || '';
   const port = settings?.smtpPort || 587;
@@ -79,19 +68,8 @@ export async function isSmtpConfigured(teamId: string): Promise<boolean> {
  * Never returns raw passwords or tokens.
  */
 export async function getMaskedSmtpConfig(teamId: string) {
-  const settings = await prisma.teamSettings.findUnique({
-    where: { teamId },
-    select: {
-      smtpHost: true,
-      smtpPort: true,
-      smtpSecure: true,
-      smtpUser: true,
-      smtpPass: true,
-      emailFrom: true,
-      emailDebugMode: true,
-      emailDebugAddress: true,
-    },
-  });
+  const settingsSnap = await teamSettingsDoc(teamId).get();
+  const settings = settingsSnap.exists ? settingsSnap.data()! : null;
 
   const decryptedUser = decryptIfPresent(settings?.smtpUser);
   const decryptedPass = decryptIfPresent(settings?.smtpPass);
@@ -109,20 +87,12 @@ export async function getMaskedSmtpConfig(teamId: string) {
 }
 
 /**
- * Get IMAP config for a team from the database.
+ * Get IMAP config for a team from Firestore.
  * Decrypts IMAP credentials from TeamSettings.
  */
 export async function getImapConfig(teamId: string): Promise<ImapConfig> {
-  const settings = await prisma.teamSettings.findUnique({
-    where: { teamId },
-    select: {
-      imapHost: true,
-      imapPort: true,
-      imapSecure: true,
-      imapUser: true,
-      imapPass: true,
-    },
-  });
+  const settingsSnap = await teamSettingsDoc(teamId).get();
+  const settings = settingsSnap.exists ? settingsSnap.data()! : null;
 
   const host = settings?.imapHost || '';
   const port = settings?.imapPort || 993;
@@ -150,16 +120,8 @@ export async function isImapConfigured(teamId: string): Promise<boolean> {
  * Returns a masked version of the IMAP config safe for displaying in UI.
  */
 export async function getMaskedImapConfig(teamId: string) {
-  const settings = await prisma.teamSettings.findUnique({
-    where: { teamId },
-    select: {
-      imapHost: true,
-      imapPort: true,
-      imapSecure: true,
-      imapUser: true,
-      imapPass: true,
-    },
-  });
+  const settingsSnap = await teamSettingsDoc(teamId).get();
+  const settings = settingsSnap.exists ? settingsSnap.data()! : null;
 
   const decryptedUser = decryptIfPresent(settings?.imapUser);
   const decryptedPass = decryptIfPresent(settings?.imapPass);

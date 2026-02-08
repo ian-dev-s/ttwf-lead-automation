@@ -15,7 +15,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { formatPhoneNumber } from '@/lib/utils';
-import { Contact } from '@prisma/client';
+import { Contact } from '@/types';
 import {
   Edit2,
   Loader2,

@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { teamSettingsDoc, stripUndefined } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -44,36 +44,75 @@ export async function GET(_request: NextRequest) {
     const teamId = session.user.teamId;
 
     // Get or create default settings
-    let settings = await prisma.teamSettings.findUnique({
-      where: { teamId },
-    });
+    const docRef = teamSettingsDoc(teamId);
+    const docSnap = await docRef.get();
 
-    if (!settings) {
-      settings = await prisma.teamSettings.create({
-        data: {
-          teamId,
-          targetIndustries: [
-            'Plumber',
-            'Electrician',
-            'Painter',
-            'Landscaper',
-            'Cleaner',
-            'Caterer',
-            'Photographer',
-            'Personal Trainer',
-            'Beauty Salon',
-            'Auto Mechanic',
-          ],
-          targetCities: [
-            'Johannesburg',
-            'Cape Town',
-            'Durban',
-            'Pretoria',
-            'Port Elizabeth',
-          ],
-          blacklistedIndustries: [],
-        },
-      });
+    let settings;
+
+    if (!docSnap.exists) {
+      // Create default settings
+      const defaultSettings = {
+        dailyLeadTarget: 10,
+        leadGenerationEnabled: true,
+        scrapeDelayMs: 2000,
+        maxLeadsPerRun: 20,
+        searchRadiusKm: 50,
+        minGoogleRating: 4.0,
+        targetIndustries: [
+          'Plumber',
+          'Electrician',
+          'Painter',
+          'Landscaper',
+          'Cleaner',
+          'Caterer',
+          'Photographer',
+          'Personal Trainer',
+          'Beauty Salon',
+          'Auto Mechanic',
+        ],
+        targetCities: [
+          'Johannesburg',
+          'Cape Town',
+          'Durban',
+          'Pretoria',
+          'Port Elizabeth',
+        ],
+        blacklistedIndustries: [],
+        autoGenerateMessages: false,
+        companyName: '',
+        companyWebsite: '',
+        companyTagline: '',
+        logoUrl: null,
+        bannerUrl: null,
+        whatsappPhone: null,
+        socialFacebookUrl: null,
+        socialInstagramUrl: null,
+        socialLinkedinUrl: null,
+        socialTwitterUrl: null,
+        socialTiktokUrl: null,
+        aiTone: null,
+        aiWritingStyle: null,
+        aiCustomInstructions: null,
+        smtpHost: null,
+        smtpPort: 587,
+        smtpSecure: false,
+        smtpUser: null,
+        smtpPass: null,
+        emailFrom: null,
+        emailDebugMode: false,
+        emailDebugAddress: null,
+        imapHost: null,
+        imapPort: 993,
+        imapSecure: true,
+        imapUser: null,
+        imapPass: null,
+        updatedAt: new Date(),
+      };
+
+      await docRef.set(defaultSettings);
+      settings = defaultSettings;
+    } else {
+      settings = docSnap.data();
     }
 
     return NextResponse.json(settings);
@@ -107,17 +146,21 @@ export async function PATCH(request: NextRequest) {
     const body = await request.json();
     const validatedData = settingsSchema.parse(body);
 
-    const settings = await prisma.teamSettings.upsert({
-      where: { teamId },
-      update: validatedData,
-      create: {
-        teamId,
-        ...validatedData,
-        targetIndustries: validatedData.targetIndustries || [],
-        targetCities: validatedData.targetCities || [],
-        blacklistedIndustries: validatedData.blacklistedIndustries || [],
-      },
+    const docRef = teamSettingsDoc(teamId);
+    
+    const updateData = stripUndefined({
+      ...validatedData,
+      targetIndustries: validatedData.targetIndustries || [],
+      targetCities: validatedData.targetCities || [],
+      blacklistedIndustries: validatedData.blacklistedIndustries || [],
+      updatedAt: new Date(),
     });
+
+    // Use set with merge for upsert behavior
+    await docRef.set(updateData, { merge: true });
+
+    const updatedDoc = await docRef.get();
+    const settings = updatedDoc.data();
 
     return NextResponse.json(settings);
   } catch (error) {

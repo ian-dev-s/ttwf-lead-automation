@@ -1,55 +1,55 @@
 import { DashboardStats } from '@/components/dashboard/DashboardStats';
 import { Header } from '@/components/layout/Header';
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { leadsCollection, messagesCollection } from '@/lib/firebase/collections';
 
-async function getStats() {
-  const [
-    totalLeads,
-    leadsByStatus,
-    recentLeads,
-    pendingMessages,
-    weeklyLeads,
-  ] = await Promise.all([
-    prisma.lead.count(),
-    prisma.lead.groupBy({
-      by: ['status'],
-      _count: true,
-    }),
-    prisma.lead.findMany({
-      take: 5,
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        businessName: true,
-        status: true,
-        location: true,
-        createdAt: true,
-      },
-    }),
-    prisma.message.count({
-      where: {
-        status: {
-          in: ['DRAFT', 'PENDING_APPROVAL', 'APPROVED'],
-        },
-      },
-    }),
-    prisma.lead.count({
-      where: {
-        createdAt: {
-          gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-        },
-      },
-    }),
+export const dynamic = 'force-dynamic';
+
+async function getStats(teamId: string) {
+  const leadsCol = leadsCollection(teamId);
+
+  // Fetch all leads to compute groupBy-like stats
+  const [allLeadsSnap, pendingMsgSnap] = await Promise.all([
+    leadsCol.get(),
+    messagesCollection(teamId)
+      .where('status', 'in', ['DRAFT', 'PENDING_APPROVAL', 'APPROVED'])
+      .count()
+      .get(),
   ]);
 
-  const statusCounts = leadsByStatus.reduce(
-    (acc, item) => {
-      acc[item.status] = item._count;
-      return acc;
-    },
-    {} as Record<string, number>
-  );
+  const totalLeads = allLeadsSnap.size;
+  const pendingMessages = pendingMsgSnap.data().count;
+
+  // Group by status
+  const statusCounts: Record<string, number> = {};
+  const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  let weeklyLeads = 0;
+
+  const recentLeads: any[] = [];
+
+  allLeadsSnap.forEach((doc) => {
+    const data = doc.data();
+    const status = data.status as string;
+    statusCounts[status] = (statusCounts[status] || 0) + 1;
+
+    const createdAt = data.createdAt?.toDate ? (data.createdAt as any).toDate() : new Date(data.createdAt as any);
+    if (createdAt >= oneWeekAgo) {
+      weeklyLeads++;
+    }
+  });
+
+  // Get 5 most recent leads
+  const recentSnap = await leadsCol.orderBy('createdAt', 'desc').limit(5).get();
+  recentSnap.forEach((doc) => {
+    const data = doc.data();
+    recentLeads.push({
+      id: doc.id,
+      businessName: data.businessName,
+      status: data.status,
+      location: data.location,
+      createdAt: data.createdAt,
+    });
+  });
 
   return {
     totalLeads,
@@ -65,7 +65,11 @@ async function getStats() {
 
 export default async function DashboardPage() {
   const session = await auth();
-  const stats = await getStats();
+  const teamId = session?.user?.teamId || '';
+  const stats = teamId ? await getStats(teamId) : {
+    totalLeads: 0, newLeads: 0, qualifiedLeads: 0, contactedLeads: 0,
+    convertedLeads: 0, pendingMessages: 0, weeklyLeads: 0, recentLeads: [],
+  };
 
   return (
     <div className="flex flex-col h-full">

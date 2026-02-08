@@ -1,6 +1,6 @@
 import { auth } from '@/lib/auth';
 import { SUPPORTED_COUNTRIES } from '@/lib/constants';
-import { prisma } from '@/lib/db';
+import { scrapingJobsCollection } from '@/lib/firebase/collections';
 import { DEFAULT_COUNTRY_CODE, runScrapingJob, SA_CITIES, scheduleScrapingJob, TARGET_CATEGORIES } from '@/lib/scraper/scheduler';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -31,19 +31,22 @@ export async function GET(request: NextRequest) {
     const countryFilter = searchParams.get('country');
     const limit = parseInt(searchParams.get('limit') || '10');
 
-    const where: Record<string, unknown> = { teamId };
+    let query: any = scrapingJobsCollection(teamId).orderBy('createdAt', 'desc');
+    
     if (status) {
-      where.status = status;
+      query = query.where('status', '==', status);
     }
     if (countryFilter) {
-      where.country = countryFilter;
+      query = query.where('country', '==', countryFilter);
     }
 
-    const jobs = await prisma.scrapingJob.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-    });
+    query = query.limit(limit);
+
+    const snapshot = await query.get();
+    const jobs = snapshot.docs.map((doc: any) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
 
     // Build list of available countries with their cities
     const availableCountries = Object.entries(SUPPORTED_COUNTRIES).map(([code, config]) => ({
@@ -120,14 +123,13 @@ export async function POST(request: NextRequest) {
     // If requested, run immediately (in background)
     if (runImmediately) {
       // Start the job in the background
-      runScrapingJob(jobId).catch((error) => {
+      runScrapingJob(teamId, jobId).catch((error) => {
         console.error('Background scraping job failed:', error);
       });
     }
 
-    const job = await prisma.scrapingJob.findUnique({
-      where: { id: jobId },
-    });
+    const jobDoc = await scrapingJobsCollection(teamId).doc(jobId).get();
+    const job = jobDoc.exists ? { id: jobDoc.id, ...jobDoc.data() } : null;
 
     return NextResponse.json(
       {

@@ -1,6 +1,6 @@
 import { auth } from '@/lib/auth';
 import { encrypt, maskSecret, decrypt } from '@/lib/crypto';
-import { prisma } from '@/lib/db';
+import { teamApiKeysCollection, teamApiKeyDoc, serverTimestamp } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -24,13 +24,13 @@ export async function GET() {
 
     const teamId = session.user.teamId;
 
-    const keys = await prisma.teamApiKey.findMany({
-      where: { teamId },
-      orderBy: { createdAt: 'desc' },
-    });
+    const snapshot = await teamApiKeysCollection(teamId)
+      .orderBy('createdAt', 'desc')
+      .get();
 
     // Return masked keys
-    const maskedKeys = keys.map(key => {
+    const maskedKeys = snapshot.docs.map(doc => {
+      const key = doc.data();
       let maskedKey: string | null = null;
       try {
         const decrypted = decrypt(key.encryptedKey);
@@ -40,13 +40,13 @@ export async function GET() {
       }
 
       return {
-        id: key.id,
+        id: doc.id,
         provider: key.provider,
         label: key.label,
         maskedKey,
         isActive: key.isActive,
-        createdAt: key.createdAt,
-        updatedAt: key.updatedAt,
+        createdAt: key.createdAt?.toDate?.() || key.createdAt,
+        updatedAt: key.updatedAt?.toDate?.() || key.updatedAt,
       };
     });
 
@@ -77,33 +77,44 @@ export async function POST(request: NextRequest) {
     const encryptedKey = encrypt(data.apiKey);
 
     // Upsert - replace existing key for the same provider
-    const key = await prisma.teamApiKey.upsert({
-      where: {
-        teamId_provider: {
-          teamId,
-          provider: data.provider,
-        },
-      },
-      update: {
+    const existingKeysSnapshot = await teamApiKeysCollection(teamId)
+      .where('provider', '==', data.provider)
+      .limit(1)
+      .get();
+
+    let keyDocRef;
+    if (!existingKeysSnapshot.empty) {
+      // Update existing key
+      keyDocRef = existingKeysSnapshot.docs[0].ref;
+      await keyDocRef.update({
         encryptedKey,
         label: data.label || `${data.provider} API Key`,
         isActive: true,
-      },
-      create: {
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      // Create new key
+      keyDocRef = teamApiKeysCollection(teamId).doc();
+      await keyDocRef.set({
         teamId,
         provider: data.provider,
         encryptedKey,
         label: data.label || `${data.provider} API Key`,
         isActive: true,
-      },
-    });
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    const keyDoc = await keyDocRef.get();
+    const keyData = keyDoc.data()!;
 
     return NextResponse.json({
-      id: key.id,
-      provider: key.provider,
-      label: key.label,
+      id: keyDoc.id,
+      provider: keyData.provider,
+      label: keyData.label,
       maskedKey: maskSecret(data.apiKey),
-      isActive: key.isActive,
+      isActive: keyData.isActive,
       success: true,
     }, { status: 201 });
   } catch (error) {
@@ -132,15 +143,14 @@ export async function DELETE(request: NextRequest) {
     const { id } = deleteKeySchema.parse(body);
 
     // Verify the key belongs to this team
-    const key = await prisma.teamApiKey.findFirst({
-      where: { id, teamId },
-    });
+    const docRef = teamApiKeyDoc(teamId, id);
+    const docSnap = await docRef.get();
 
-    if (!key) {
+    if (!docSnap.exists) {
       return NextResponse.json({ error: 'API key not found' }, { status: 404 });
     }
 
-    await prisma.teamApiKey.delete({ where: { id } });
+    await docRef.delete();
 
     return NextResponse.json({ success: true });
   } catch (error) {

@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { contactDoc, stripUndefined } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 
 // GET /api/contacts/[id] - Get a single contact
@@ -16,13 +16,17 @@ export async function GET(
     const { id } = await params;
     const teamId = session.user.teamId;
 
-    const contact = await prisma.contact.findFirst({
-      where: { id, teamId },
-    });
+    const docRef = contactDoc(teamId, id);
+    const docSnap = await docRef.get();
 
-    if (!contact) {
+    if (!docSnap.exists) {
       return NextResponse.json({ error: 'Contact not found' }, { status: 404 });
     }
+
+    const contact = {
+      id: docSnap.id,
+      ...docSnap.data(),
+    };
 
     return NextResponse.json(contact);
   } catch (error) {
@@ -50,25 +54,30 @@ export async function PATCH(
     const body = await request.json();
     const { name, email, phone, telegramId, notes, isFavorite } = body;
 
-    const contact = await prisma.contact.findFirst({
-      where: { id, teamId },
-    });
+    const docRef = contactDoc(teamId, id);
+    const docSnap = await docRef.get();
 
-    if (!contact) {
+    if (!docSnap.exists) {
       return NextResponse.json({ error: 'Contact not found' }, { status: 404 });
     }
 
-    const updatedContact = await prisma.contact.update({
-      where: { id },
-      data: {
-        ...(name !== undefined && { name }),
-        ...(email !== undefined && { email: email || null }),
-        ...(phone !== undefined && { phone: phone || null }),
-        ...(telegramId !== undefined && { telegramId: telegramId || null }),
-        ...(notes !== undefined && { notes: notes || null }),
-        ...(isFavorite !== undefined && { isFavorite }),
-      },
+    const updateData = stripUndefined({
+      ...(name !== undefined && { name }),
+      ...(email !== undefined && { email: email || null }),
+      ...(phone !== undefined && { phone: phone || null }),
+      ...(telegramId !== undefined && { telegramId: telegramId || null }),
+      ...(notes !== undefined && { notes: notes || null }),
+      ...(isFavorite !== undefined && { isFavorite }),
+      updatedAt: new Date(),
     });
+
+    await docRef.update(updateData);
+
+    const updatedDoc = await docRef.get();
+    const updatedContact = {
+      id: updatedDoc.id,
+      ...updatedDoc.data(),
+    };
 
     return NextResponse.json(updatedContact);
   } catch (error) {
@@ -94,17 +103,14 @@ export async function DELETE(
     const { id } = await params;
     const teamId = session.user.teamId;
 
-    const contact = await prisma.contact.findFirst({
-      where: { id, teamId },
-    });
+    const docRef = contactDoc(teamId, id);
+    const docSnap = await docRef.get();
 
-    if (!contact) {
+    if (!docSnap.exists) {
       return NextResponse.json({ error: 'Contact not found' }, { status: 404 });
     }
 
-    await prisma.contact.delete({
-      where: { id },
-    });
+    await docRef.delete();
 
     return NextResponse.json({ success: true });
   } catch (error) {

@@ -1,5 +1,5 @@
-import { hashPassword } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { adminAuth } from '@/lib/firebase/admin';
+import { userDoc, teamsCollection, usersCollection } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -16,60 +16,67 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { email, password, name } = registerSchema.parse(body);
 
-    // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (existingUser) {
-      return NextResponse.json(
-        { error: 'User with this email already exists' },
-        { status: 400 }
-      );
-    }
-
-    // Hash password
-    const passwordHash = await hashPassword(password);
-
     // Check if this is the first user (make them admin)
-    const userCount = await prisma.user.count();
-    const role = userCount === 0 ? 'ADMIN' : 'USER';
+    const usersSnapshot = await usersCollection().limit(1).get();
+    const isFirstUser = usersSnapshot.empty;
+    const role = isFirstUser ? 'ADMIN' : 'USER';
 
     // Find a default team to assign the user to
-    const defaultTeam = await prisma.team.findFirst();
+    const teamsSnapshot = await teamsCollection().limit(1).get();
+    const defaultTeamId = teamsSnapshot.empty ? null : teamsSnapshot.docs[0].id;
 
-    // Create user
-    const user = await prisma.user.create({
-      data: {
-        email,
-        name,
-        passwordHash,
-        role,
-        teamId: defaultTeam?.id,
-      },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        createdAt: true,
-      },
+    // Create user in Firebase Auth
+    const userRecord = await adminAuth.createUser({
+      email,
+      password,
+      displayName: name,
+    });
+
+    // Set custom claims (teamId and role)
+    await adminAuth.setCustomUserClaims(userRecord.uid, {
+      role,
+      teamId: defaultTeamId || '',
+    });
+
+    // Create Firestore user document
+    const now = new Date();
+    await userDoc(userRecord.uid).set({
+      email,
+      name,
+      role: role as 'ADMIN' | 'USER',
+      teamId: defaultTeamId,
+      createdAt: now,
+      updatedAt: now,
     });
 
     return NextResponse.json(
       {
         success: true,
-        user,
-        message: role === 'ADMIN' 
-          ? 'Admin account created successfully' 
-          : 'Account created successfully',
+        user: {
+          id: userRecord.uid,
+          email,
+          name,
+          role,
+          createdAt: now,
+        },
+        message:
+          role === 'ADMIN'
+            ? 'Admin account created successfully'
+            : 'Account created successfully',
       },
       { status: 201 }
     );
-  } catch (error) {
+  } catch (error: any) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
         { error: 'Validation failed', details: error.errors },
+        { status: 400 }
+      );
+    }
+    // Firebase Auth error for duplicate email
+    if (error?.code === 'auth/email-already-exists') {
+      return NextResponse.json(
+        { error: 'User with this email already exists' },
         { status: 400 }
       );
     }

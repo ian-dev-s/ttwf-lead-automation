@@ -1,8 +1,8 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { leadsCollection, messagesCollection, stripUndefined } from '@/lib/firebase/collections';
 import { events } from '@/lib/events';
 import { calculateLeadScore } from '@/lib/utils';
-import { LeadStatus } from '@prisma/client';
+import type { LeadStatus } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -33,56 +33,75 @@ export async function GET(request: NextRequest) {
     }
 
     const teamId = session.user.teamId;
-
     const searchParams = request.nextUrl.searchParams;
     const status = searchParams.get('status') as LeadStatus | null;
     const page = parseInt(searchParams.get('page') || '1');
     const limit = parseInt(searchParams.get('limit') || '50');
     const sortBy = searchParams.get('sortBy') || 'createdAt';
-    const sortOrder = searchParams.get('sortOrder') || 'desc';
+    const sortOrder = (searchParams.get('sortOrder') || 'desc') as 'asc' | 'desc';
     const search = searchParams.get('search');
 
-    // Build where clause
-    const where: any = {
-      teamId,
-    };
-    
+    let query: FirebaseFirestore.Query<any> = leadsCollection(teamId);
+
+    // Status filter
     if (status) {
-      where.status = status;
+      query = query.where('status', '==', status);
     }
-    
+
+    // Search by lowercase fields (prefix matching)
     if (search) {
-      where.OR = [
-        { businessName: { contains: search, mode: 'insensitive' } },
-        { location: { contains: search, mode: 'insensitive' } },
-        { industry: { contains: search, mode: 'insensitive' } },
-      ];
+      const searchLower = search.toLowerCase();
+      // Firestore can only do prefix matching on one field at a time
+      // We'll search businessNameLower and filter further in memory
+      query = query
+        .where('businessNameLower', '>=', searchLower)
+        .where('businessNameLower', '<=', searchLower + '\uf8ff');
     }
 
-    // Get total count
-    const total = await prisma.lead.count({ where });
+    // Sort
+    if (!search) {
+      // When searching, Firestore already orders by the searched field
+      query = query.orderBy(sortBy, sortOrder);
+    }
 
-    // Get leads with message count and types
-    const leads = await prisma.lead.findMany({
-      where,
-      include: {
-        messages: {
-          select: {
-            id: true,
-            type: true,
-            status: true,
-          },
-        },
-        _count: {
-          select: {
-            messages: true,
-          },
-        },
-      },
-      orderBy: { [sortBy]: sortOrder },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    // Get total count (separate query without pagination)
+    const countQuery = status
+      ? leadsCollection(teamId).where('status', '==', status)
+      : leadsCollection(teamId);
+    const countSnapshot = await countQuery.count().get();
+    const total = countSnapshot.data().count;
+
+    // Pagination: offset-based using limit/offset for simplicity
+    // (Firestore offset is less efficient than cursor-based but maintains API compat)
+    query = query.offset((page - 1) * limit).limit(limit);
+
+    const snapshot = await query.get();
+
+    // Build leads with message data
+    const leads = await Promise.all(
+      snapshot.docs.map(async (doc) => {
+        const data = doc.data();
+
+        // Get messages for this lead
+        const msgSnapshot = await messagesCollection(teamId)
+          .where('leadId', '==', doc.id)
+          .select('type', 'status')
+          .get();
+
+        const messages = msgSnapshot.docs.map((m) => ({
+          id: m.id,
+          type: m.data().type,
+          status: m.data().status,
+        }));
+
+        return {
+          id: doc.id,
+          ...data,
+          messages,
+          _count: { messages: messages.length },
+        };
+      })
+    );
 
     return NextResponse.json({
       data: leads,
@@ -110,7 +129,6 @@ export async function POST(request: NextRequest) {
 
     const teamId = session.user.teamId;
 
-    // Check permissions
     if (session.user.role === 'VIEWER') {
       return NextResponse.json(
         { error: 'Insufficient permissions' },
@@ -132,19 +150,42 @@ export async function POST(request: NextRequest) {
       hasEmail: !!validatedData.email,
     });
 
-    const lead = await prisma.lead.create({
-      data: {
-        ...validatedData,
-        email: validatedData.email || null,
-        facebookUrl: validatedData.facebookUrl || null,
-        googleMapsUrl: validatedData.googleMapsUrl || null,
-        website: validatedData.website || null,
-        score,
-        source: validatedData.source || 'manual',
-        teamId,
-        createdById: session.user.id,
-      },
+    const now = new Date();
+    const leadData = stripUndefined({
+      businessName: validatedData.businessName,
+      businessNameLower: validatedData.businessName.toLowerCase(),
+      industry: validatedData.industry || null,
+      location: validatedData.location,
+      locationLower: validatedData.location.toLowerCase(),
+      country: 'ZA',
+      address: validatedData.address || null,
+      phone: validatedData.phone || null,
+      email: validatedData.email || null,
+      facebookUrl: validatedData.facebookUrl || null,
+      instagramUrl: null,
+      twitterUrl: null,
+      linkedinUrl: null,
+      googleMapsUrl: validatedData.googleMapsUrl || null,
+      website: validatedData.website || null,
+      websiteQuality: validatedData.websiteQuality || null,
+      googleRating: validatedData.googleRating || null,
+      reviewCount: validatedData.reviewCount || null,
+      description: null,
+      status: 'NEW' as const,
+      source: validatedData.source || 'manual',
+      score,
+      notes: validatedData.notes || null,
+      metadata: null,
+      createdById: session.user.id,
+      createdAt: now,
+      updatedAt: now,
+      contactedAt: null,
     });
+
+    const docRef = leadsCollection(teamId).doc();
+    await docRef.set(leadData);
+
+    const lead = { id: docRef.id, ...leadData };
 
     // Publish real-time event
     await events.leadCreated({

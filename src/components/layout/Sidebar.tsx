@@ -9,6 +9,7 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { useSession } from '@/components/providers/SessionProvider';
 import { cn } from '@/lib/utils';
 import {
     BookUser,
@@ -23,9 +24,8 @@ import {
     Settings,
     Users,
 } from 'lucide-react';
-import { signOut, useSession } from 'next-auth/react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
@@ -41,15 +41,21 @@ const navigation = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { data: session } = useSession();
+  const router = useRouter();
+  const { user, signOut } = useSession();
 
-  const userInitials = session?.user?.name
-    ? session.user.name
+  const userInitials = user?.name
+    ? user.name
         .split(' ')
         .map((n) => n[0])
         .join('')
         .toUpperCase()
-    : session?.user?.email?.[0].toUpperCase() || '?';
+    : user?.email?.[0].toUpperCase() || '?';
+
+  const handleSignOut = async () => {
+    await signOut();
+    router.push('/login');
+  };
 
   return (
     <div className="flex flex-col h-full w-64 bg-card border-r">
@@ -103,10 +109,10 @@ export function Sidebar() {
               </Avatar>
               <div className="flex-1 text-left">
                 <p className="text-sm font-medium truncate">
-                  {session?.user?.name || session?.user?.email}
+                  {user?.name || user?.email}
                 </p>
                 <p className="text-xs text-muted-foreground capitalize">
-                  {session?.user?.role?.toLowerCase()}
+                  {user?.role?.toLowerCase()}
                 </p>
               </div>
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
@@ -121,7 +127,7 @@ export function Sidebar() {
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              onClick={() => signOut({ callbackUrl: '/login' })}
+              onClick={handleSignOut}
               className="text-destructive"
             >
               <LogOut className="h-4 w-4 mr-2" />

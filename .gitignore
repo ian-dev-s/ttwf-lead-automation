@@ -103,3 +103,9 @@ next-env.d.ts
 
 # Prisma generated files
 /src/generated/prisma
+
+# Firebase emulator data (local development)
+/firebase-data
+firebase-debug.log
+firestore-debug.log
+ui-debug.log

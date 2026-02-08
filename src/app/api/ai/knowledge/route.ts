@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { aiKnowledgeItemsCollection, serverTimestamp, stripUndefined } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -22,13 +22,19 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const category = searchParams.get('category');
 
-    const items = await prisma.aIKnowledgeItem.findMany({
-      where: {
-        teamId,
-        ...(category ? { category } : {}),
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const snapshot = await aiKnowledgeItemsCollection(teamId)
+      .orderBy('createdAt', 'desc')
+      .get();
+
+    let items = snapshot.docs.map(d => ({
+      id: d.id,
+      ...d.data(),
+    }));
+
+    // Filter by category client-side (Firestore requires composite index for where + orderBy on different fields)
+    if (category) {
+      items = items.filter(item => item.category === category);
+    }
 
     return NextResponse.json(items);
   } catch (error) {
@@ -53,12 +59,22 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const data = createKnowledgeSchema.parse(body);
 
-    const item = await prisma.aIKnowledgeItem.create({
-      data: {
-        ...data,
-        teamId,
-      },
+    const itemData = stripUndefined({
+      teamId,
+      title: data.title,
+      content: data.content,
+      category: data.category ?? null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
     });
+
+    const docRef = aiKnowledgeItemsCollection(teamId).doc();
+    await docRef.set(itemData);
+
+    const item = {
+      id: docRef.id,
+      ...itemData,
+    };
 
     return NextResponse.json(item, { status: 201 });
   } catch (error) {

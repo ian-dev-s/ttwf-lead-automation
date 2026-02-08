@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { aiSampleResponseDoc, serverTimestamp, stripUndefined } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -22,11 +22,18 @@ export async function GET(
 
     const { id } = await params;
     const teamId = session.user.teamId;
-    const sample = await prisma.aISampleResponse.findFirst({ where: { id, teamId } });
+    
+    const docRef = aiSampleResponseDoc(teamId, id);
+    const docSnap = await docRef.get();
 
-    if (!sample) {
+    if (!docSnap.exists) {
       return NextResponse.json({ error: 'Sample response not found' }, { status: 404 });
     }
+
+    const sample = {
+      id: docSnap.id,
+      ...docSnap.data(),
+    };
 
     return NextResponse.json(sample);
   } catch (error) {
@@ -54,18 +61,25 @@ export async function PATCH(
     const body = await request.json();
     const data = updateSampleSchema.parse(body);
 
-    const existingSample = await prisma.aISampleResponse.findFirst({
-      where: { id, teamId },
-    });
+    const docRef = aiSampleResponseDoc(teamId, id);
+    const docSnap = await docRef.get();
 
-    if (!existingSample) {
+    if (!docSnap.exists) {
       return NextResponse.json({ error: 'Sample response not found' }, { status: 404 });
     }
 
-    const sample = await prisma.aISampleResponse.update({
-      where: { id },
-      data,
+    const updatePayload = stripUndefined({
+      ...data,
+      updatedAt: serverTimestamp(),
     });
+
+    await docRef.update(updatePayload);
+
+    const updatedDoc = await docRef.get();
+    const sample = {
+      id: updatedDoc.id,
+      ...updatedDoc.data(),
+    };
 
     return NextResponse.json(sample);
   } catch (error) {
@@ -94,15 +108,14 @@ export async function DELETE(
     const { id } = await params;
     const teamId = session.user.teamId;
 
-    const existingSample = await prisma.aISampleResponse.findFirst({
-      where: { id, teamId },
-    });
+    const docRef = aiSampleResponseDoc(teamId, id);
+    const docSnap = await docRef.get();
 
-    if (!existingSample) {
+    if (!docSnap.exists) {
       return NextResponse.json({ error: 'Sample response not found' }, { status: 404 });
     }
 
-    await prisma.aISampleResponse.delete({ where: { id } });
+    await docRef.delete();
 
     return NextResponse.json({ success: true });
   } catch (error) {

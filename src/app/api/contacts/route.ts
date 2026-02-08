@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { contactsCollection, stripUndefined } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 
 // GET /api/contacts - List all contacts
@@ -13,30 +13,32 @@ export async function GET(request: NextRequest) {
     const teamId = session.user.teamId;
 
     const searchParams = request.nextUrl.searchParams;
-    const search = searchParams.get('search') || '';
     const favoritesOnly = searchParams.get('favorites') === 'true';
 
-    const contacts = await prisma.contact.findMany({
-      where: {
-        AND: [
-          { teamId },
-          search
-            ? {
-                OR: [
-                  { name: { contains: search, mode: 'insensitive' } },
-                  { email: { contains: search, mode: 'insensitive' } },
-                  { phone: { contains: search, mode: 'insensitive' } },
-                ],
-              }
-            : {},
-          favoritesOnly ? { isFavorite: true } : {},
-        ],
-      },
-      orderBy: [
-        { isFavorite: 'desc' },
-        { name: 'asc' },
-      ],
-    });
+    let query: FirebaseFirestore.Query<any> = contactsCollection(teamId);
+
+    // Apply favorites filter if requested
+    if (favoritesOnly) {
+      query = query.where('isFavorite', '==', true);
+    }
+
+    // Order by name (Firestore doesn't support composite ordering with boolean fields easily)
+    query = query.orderBy('name', 'asc');
+
+    const snapshot = await query.get();
+    const contacts = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    // Sort favorites first if not filtering by favorites only
+    if (!favoritesOnly) {
+      contacts.sort((a, b) => {
+        if (a.isFavorite && !b.isFavorite) return -1;
+        if (!a.isFavorite && b.isFavorite) return 1;
+        return a.name.localeCompare(b.name);
+      });
+    }
 
     return NextResponse.json(contacts);
   } catch (error) {
@@ -74,18 +76,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const contact = await prisma.contact.create({
-      data: {
-        teamId: session.user.teamId,
-        name,
-        email: email || null,
-        phone: phone || null,
-        telegramId: telegramId || null,
-        notes: notes || null,
-        isFavorite: isFavorite || false,
-        createdById: session.user.id,
-      },
+    const teamId = session.user.teamId;
+    const now = new Date();
+
+    const contactData = stripUndefined({
+      name,
+      email: email || null,
+      phone: phone || null,
+      telegramId: telegramId || null,
+      notes: notes || null,
+      isFavorite: isFavorite || false,
+      createdById: session.user.id,
+      createdAt: now,
+      updatedAt: now,
     });
+
+    const docRef = contactsCollection(teamId).doc();
+    await docRef.set(contactData);
+
+    const contact = { id: docRef.id, ...contactData };
 
     return NextResponse.json(contact, { status: 201 });
   } catch (error) {

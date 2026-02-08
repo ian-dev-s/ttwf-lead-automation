@@ -25,7 +25,7 @@ import {
   leadStatusColors,
   leadStatusLabels,
 } from '@/lib/utils';
-import { Lead, Message, MessageType, StatusHistory } from '@prisma/client';
+import { Lead, Message, MessageType, StatusHistory } from '@/types';
 import {
   CheckCircle,
   Edit2,

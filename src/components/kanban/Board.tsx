@@ -3,7 +3,7 @@
 import { useLeadsRealtime } from '@/hooks/use-realtime';
 import { kanbanColumnOrder, leadStatusLabels } from '@/lib/utils';
 import { DragDropContext, DropResult } from '@hello-pangea/dnd';
-import { Lead, LeadStatus } from '@prisma/client';
+import { Lead, LeadStatus } from '@/types';
 import { AlertCircle, RefreshCw, Wifi, WifiOff, X } from 'lucide-react';
 import { useCallback, useEffect, useState, useTransition } from 'react';
 import { KanbanColumn } from './Column';

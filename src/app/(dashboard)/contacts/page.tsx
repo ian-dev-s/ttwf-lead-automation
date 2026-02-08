@@ -1,6 +1,8 @@
 import { Header } from '@/components/layout/Header';
 import { ContactsManager } from '@/components/contacts/ContactsManager';
 
+export const dynamic = 'force-dynamic';
+
 export default function ContactsPage() {
   return (
     <div className="flex flex-col h-full">

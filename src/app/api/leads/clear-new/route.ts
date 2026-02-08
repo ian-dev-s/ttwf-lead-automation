@@ -1,5 +1,6 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { leadsCollection, messagesCollection, statusHistoryCollection } from '@/lib/firebase/collections';
+import { adminDb } from '@/lib/firebase/admin';
 import { NextResponse } from 'next/server';
 
 // DELETE /api/leads/clear-new - Delete all leads with NEW status
@@ -12,7 +13,6 @@ export async function DELETE() {
 
     const teamId = session.user.teamId;
 
-    // Only admins can delete leads in bulk
     if (session.user.role !== 'ADMIN') {
       return NextResponse.json(
         { error: 'Only administrators can clear leads' },
@@ -20,12 +20,12 @@ export async function DELETE() {
       );
     }
 
-    // Count leads to be deleted
-    const count = await prisma.lead.count({
-      where: { status: 'NEW', teamId },
-    });
+    // Find all NEW leads
+    const newLeadsSnap = await leadsCollection(teamId)
+      .where('status', '==', 'NEW')
+      .get();
 
-    if (count === 0) {
+    if (newLeadsSnap.empty) {
       return NextResponse.json({
         success: true,
         message: 'No leads with NEW status to delete',
@@ -33,35 +33,38 @@ export async function DELETE() {
       });
     }
 
-    // Delete related messages first
-    await prisma.message.deleteMany({
-      where: {
-        lead: {
-          status: 'NEW',
-          teamId,
-        },
-      },
-    });
+    const leadIds = newLeadsSnap.docs.map((d) => d.id);
 
-    // Delete status history
-    await prisma.statusHistory.deleteMany({
-      where: {
-        lead: {
-          status: 'NEW',
-          teamId,
-        },
-      },
-    });
+    // Delete in batches (Firestore batch limit is 500)
+    const batchSize = 400;
+    for (let i = 0; i < leadIds.length; i += batchSize) {
+      const batch = adminDb.batch();
+      const batchLeadIds = leadIds.slice(i, i + batchSize);
 
-    // Delete the leads
-    const result = await prisma.lead.deleteMany({
-      where: { status: 'NEW', teamId },
-    });
+      for (const leadId of batchLeadIds) {
+        // Delete messages for this lead
+        const msgSnap = await messagesCollection(teamId)
+          .where('leadId', '==', leadId)
+          .get();
+        msgSnap.docs.forEach((d) => batch.delete(d.ref));
+
+        // Delete status history for this lead
+        const histSnap = await statusHistoryCollection(teamId)
+          .where('leadId', '==', leadId)
+          .get();
+        histSnap.docs.forEach((d) => batch.delete(d.ref));
+
+        // Delete the lead
+        batch.delete(leadsCollection(teamId).doc(leadId));
+      }
+
+      await batch.commit();
+    }
 
     return NextResponse.json({
       success: true,
-      message: `Successfully deleted ${result.count} leads with NEW status`,
-      deletedCount: result.count,
+      message: `Successfully deleted ${leadIds.length} leads with NEW status`,
+      deletedCount: leadIds.length,
     });
   } catch (error) {
     console.error('Error clearing NEW leads:', error);
@@ -82,11 +85,12 @@ export async function GET() {
 
     const teamId = session.user.teamId;
 
-    const count = await prisma.lead.count({
-      where: { status: 'NEW', teamId },
-    });
+    const countSnap = await leadsCollection(teamId)
+      .where('status', '==', 'NEW')
+      .count()
+      .get();
 
-    return NextResponse.json({ count });
+    return NextResponse.json({ count: countSnap.data().count });
   } catch (error) {
     console.error('Error counting NEW leads:', error);
     return NextResponse.json(

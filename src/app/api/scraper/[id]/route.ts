@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { scrapingJobDoc } from '@/lib/firebase/collections';
 import { cancelJob, deleteJob } from '@/lib/scraper/scheduler';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -16,13 +16,13 @@ export async function GET(
 
     const teamId = session.user.teamId;
 
-    const job = await prisma.scrapingJob.findFirst({
-      where: { id: params.id, teamId },
-    });
+    const jobDoc = await scrapingJobDoc(teamId, params.id).get();
 
-    if (!job) {
+    if (!jobDoc.exists) {
       return NextResponse.json({ error: 'Job not found' }, { status: 404 });
     }
+
+    const job = { id: jobDoc.id, ...jobDoc.data() };
 
     return NextResponse.json({ job });
   } catch (error) {
@@ -55,22 +55,22 @@ export async function DELETE(
 
     const teamId = session.user.teamId;
 
-    const job = await prisma.scrapingJob.findFirst({
-      where: { id: params.id, teamId },
-    });
+    const jobDoc = await scrapingJobDoc(teamId, params.id).get();
 
-    if (!job) {
+    if (!jobDoc.exists) {
       return NextResponse.json({ error: 'Job not found' }, { status: 404 });
     }
 
+    const job = { id: jobDoc.id, ...jobDoc.data() };
+
     // If job is running, cancel it first
     if (job.status === 'RUNNING') {
-      await cancelJob(params.id);
+      await cancelJob(teamId, params.id);
       console.log(`Cancelled running job: ${params.id}`);
     }
 
     // Delete the job
-    await deleteJob(params.id);
+    await deleteJob(teamId, params.id);
     console.log(`Deleted job: ${params.id}`);
 
     return NextResponse.json({
@@ -122,13 +122,13 @@ export async function PATCH(
     const teamId = session.user.teamId;
 
     if (body.action === 'cancel') {
-      const job = await prisma.scrapingJob.findFirst({
-        where: { id: params.id, teamId },
-      });
+      const jobDoc = await scrapingJobDoc(teamId, params.id).get();
 
-      if (!job) {
+      if (!jobDoc.exists) {
         return NextResponse.json({ error: 'Job not found' }, { status: 404 });
       }
+
+      const job = { id: jobDoc.id, ...jobDoc.data() };
 
       // Allow cancelling RUNNING or SCHEDULED jobs
       if (job.status !== 'RUNNING' && job.status !== 'SCHEDULED') {
@@ -141,13 +141,10 @@ export async function PATCH(
       // For SCHEDULED jobs that haven't started, just update the DB directly
       // Mark as COMPLETED (cancelled jobs are considered complete)
       if (job.status === 'SCHEDULED') {
-        await prisma.scrapingJob.update({
-          where: { id: params.id },
-          data: {
-            status: 'COMPLETED',
-            completedAt: new Date(),
-            error: 'Job cancelled by user before starting',
-          },
+        await scrapingJobDoc(teamId, params.id).update({
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          error: 'Job cancelled by user before starting',
         });
         console.log(`Cancelled scheduled job: ${params.id} (marked as COMPLETED)`);
         return NextResponse.json({
@@ -159,7 +156,7 @@ export async function PATCH(
       // For RUNNING jobs, use the full cancellation flow
       console.log(`[API] Calling cancelJob for ${params.id}...`);
       try {
-        const cancelled = await cancelJob(params.id);
+        const cancelled = await cancelJob(teamId, params.id);
         console.log(`[API] cancelJob returned: ${cancelled}`);
         
         if (cancelled) {

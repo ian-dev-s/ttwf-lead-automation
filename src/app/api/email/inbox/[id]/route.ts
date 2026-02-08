@@ -1,5 +1,5 @@
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/db';
+import { inboundEmailDoc, leadDoc } from '@/lib/firebase/collections';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -21,33 +21,43 @@ export async function GET(
 
     const { id } = await params;
     const teamId = session.user.teamId;
-    
-    const email = await prisma.inboundEmail.findFirst({
-      where: { id, teamId },
-      include: {
-        lead: {
-          select: {
-            id: true,
-            businessName: true,
-            email: true,
-            phone: true,
-            location: true,
-            status: true,
-          },
-        },
-      },
-    });
 
-    if (!email) {
+    const emailDocRef = await inboundEmailDoc(teamId, id).get();
+
+    if (!emailDocRef.exists) {
       return NextResponse.json({ error: 'Email not found' }, { status: 404 });
     }
 
+    const emailData = emailDocRef.data()!;
+    let email = { id: emailDocRef.id, ...emailData };
+
+    // Fetch lead relation if leadId exists
+    if (emailData.leadId) {
+      try {
+        const leadDocRef = await leadDoc(teamId, emailData.leadId).get();
+        if (leadDocRef.exists) {
+          const leadData = leadDocRef.data()!;
+          email = {
+            ...email,
+            lead: {
+              id: leadDocRef.id,
+              businessName: leadData.businessName,
+              email: leadData.email,
+              phone: leadData.phone,
+              location: leadData.location,
+              status: leadData.status,
+            },
+          };
+        }
+      } catch (error) {
+        console.error(`Error fetching lead ${emailData.leadId}:`, error);
+      }
+    }
+
     // Mark as read
-    if (!email.isRead) {
-      await prisma.inboundEmail.update({
-        where: { id },
-        data: { isRead: true },
-      });
+    if (!emailData.isRead) {
+      await inboundEmailDoc(teamId, id).update({ isRead: true, updatedAt: new Date() });
+      email.isRead = true;
     }
 
     return NextResponse.json(email);
@@ -77,27 +87,41 @@ export async function PATCH(
     const body = await request.json();
     const data = updateSchema.parse(body);
 
-    const existingEmail = await prisma.inboundEmail.findFirst({
-      where: { id, teamId },
-    });
+    const existingEmailDoc = await inboundEmailDoc(teamId, id).get();
 
-    if (!existingEmail) {
+    if (!existingEmailDoc.exists) {
       return NextResponse.json({ error: 'Email not found' }, { status: 404 });
     }
 
-    const email = await prisma.inboundEmail.update({
-      where: { id },
-      data,
-      include: {
-        lead: {
-          select: {
-            id: true,
-            businessName: true,
-            email: true,
-          },
-        },
-      },
-    });
+    const updateData: Record<string, unknown> = {
+      ...data,
+      updatedAt: new Date(),
+    };
+
+    await inboundEmailDoc(teamId, id).update(updateData);
+
+    const updatedDoc = await inboundEmailDoc(teamId, id).get();
+    let email = { id: updatedDoc.id, ...updatedDoc.data()! };
+
+    // Fetch lead relation if leadId exists
+    if (email.leadId) {
+      try {
+        const leadDocRef = await leadDoc(teamId, email.leadId).get();
+        if (leadDocRef.exists) {
+          const leadData = leadDocRef.data()!;
+          email = {
+            ...email,
+            lead: {
+              id: leadDocRef.id,
+              businessName: leadData.businessName,
+              email: leadData.email,
+            },
+          };
+        }
+      } catch (error) {
+        console.error(`Error fetching lead ${email.leadId}:`, error);
+      }
+    }
 
     return NextResponse.json(email);
   } catch (error) {
@@ -127,15 +151,13 @@ export async function DELETE(
     const { id } = await params;
     const teamId = session.user.teamId;
 
-    const existingEmail = await prisma.inboundEmail.findFirst({
-      where: { id, teamId },
-    });
+    const existingEmailDoc = await inboundEmailDoc(teamId, id).get();
 
-    if (!existingEmail) {
+    if (!existingEmailDoc.exists) {
       return NextResponse.json({ error: 'Email not found' }, { status: 404 });
     }
 
-    await prisma.inboundEmail.delete({ where: { id } });
+    await inboundEmailDoc(teamId, id).delete();
 
     return NextResponse.json({ success: true });
   } catch (error) {
