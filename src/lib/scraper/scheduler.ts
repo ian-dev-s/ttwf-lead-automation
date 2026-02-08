@@ -439,37 +439,41 @@ async function saveSmartEnrichedLead(lead: SmartEnrichedLead, teamId: string, co
     const newLeadId = leadDocRef.id;
     const newLead = { id: newLeadId, ...leadData } as Lead;
 
-    // Auto-generate email message for the new lead
-    try {
-      console.log(`   Generating email for: ${lead.businessName}`);
-      const emailMessage = await generatePersonalizedMessage({
-        teamId,
-        lead: newLead,
-      });
+    // Auto-generate email message only if the lead has an email address
+    if (leadData.email) {
+      try {
+        console.log(`   Generating email for: ${lead.businessName}`);
+        const emailMessage = await generatePersonalizedMessage({
+          teamId,
+          lead: newLead,
+        });
 
-      const now2 = new Date();
-      await messagesCollection(teamId).doc().set({
-        leadId: newLeadId,
-        type: 'EMAIL',
-        subject: emailMessage.subject || null,
-        content: emailMessage.content,
-        status: 'DRAFT',
-        sentAt: null,
-        error: null,
-        generatedBy: 'ai',
-        aiProvider: emailMessage.provider,
-        aiModel: emailMessage.model,
-        createdAt: now2,
-        updatedAt: now2,
-      });
+        const now2 = new Date();
+        await messagesCollection(teamId).doc().set({
+          leadId: newLeadId,
+          type: 'EMAIL',
+          subject: emailMessage.subject || null,
+          content: emailMessage.content,
+          status: 'DRAFT',
+          sentAt: null,
+          error: null,
+          generatedBy: 'ai',
+          aiProvider: emailMessage.provider,
+          aiModel: emailMessage.model,
+          createdAt: now2,
+          updatedAt: now2,
+        });
 
-      // Update status based on qualification tier
-      const newStatus = lead.qualificationTier === 'A' ? 'QUALIFIED' : 'MESSAGE_READY';
-      await leadDocRef.update({ status: newStatus, updatedAt: new Date() });
+        // Update status based on qualification tier
+        const newStatus = lead.qualificationTier === 'A' ? 'QUALIFIED' : 'MESSAGE_READY';
+        await leadDocRef.update({ status: newStatus, updatedAt: new Date() });
 
-      console.log(`   Email generated, status updated to: ${newStatus}`);
-    } catch (emailError) {
-      console.error(`   Failed to auto-generate email for ${lead.businessName}:`, emailError);
+        console.log(`   Email generated, status updated to: ${newStatus}`);
+      } catch (emailError) {
+        console.error(`   Failed to auto-generate email for ${lead.businessName}:`, emailError);
+      }
+    } else {
+      console.log(`   Skipping email generation for ${lead.businessName} (no email address)`);
     }
 
     return true;
@@ -914,7 +918,7 @@ export async function generateMessagesForNewLeads(teamId: string): Promise<numbe
 
     if (!msgSnap.empty) continue; // Already has messages
 
-    // Skip leads without email - no message to generate
+    // Only generate messages and update status for leads with email
     if (!lead.email) continue;
 
     try {
