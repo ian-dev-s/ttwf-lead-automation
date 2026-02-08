@@ -14,6 +14,8 @@ export interface FetchResult {
 async function createImapClient(teamId: string): Promise<ImapFlow> {
   const config = await getImapConfig(teamId);
   
+  const isLocalhost = ['localhost', '127.0.0.1', '::1'].includes(config.host);
+
   return new ImapFlow({
     host: config.host,
     port: config.port,
@@ -23,6 +25,15 @@ async function createImapClient(teamId: string): Promise<ImapFlow> {
       pass: config.auth.pass,
     },
     logger: false,
+    // When secure is false and on localhost, don't attempt STARTTLS upgrade
+    // (local mail servers like hMailServer often don't support it on the plain port)
+    ...((!config.secure && isLocalhost) ? { disableAutoIdle: false } : {}),
+    tls: {
+      // Allow self-signed certificates for local development (e.g. hMailServer, MailHog)
+      rejectUnauthorized: false,
+      // Allow older TLS versions that local mail servers may use
+      minVersion: 'TLSv1' as const,
+    },
   });
 }
 
@@ -175,6 +186,7 @@ export async function verifyImapConnection(teamId: string): Promise<{ success: b
     return { success: false, error: 'IMAP is not configured' };
   }
 
+  const config = await getImapConfig(teamId);
   const client = await createImapClient(teamId);
 
   try {
@@ -183,6 +195,24 @@ export async function verifyImapConnection(teamId: string): Promise<{ success: b
     return { success: true };
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
+    
+    // Provide more actionable error messages
+    if (errMsg.includes('Unexpected close') || errMsg.includes('ECONNRESET')) {
+      const suggestion = config.secure
+        ? `The server closed the connection. This usually means the server does not support implicit TLS/SSL on port ${config.port}. Try disabling "Use Secure Connection" and using port 143 instead.`
+        : `The server closed the connection. If using port 993, try enabling "Use Secure Connection". If using port 143, the server may not be accepting connections.`;
+      return { success: false, error: suggestion };
+    }
+    if (errMsg.includes('ECONNREFUSED')) {
+      return { success: false, error: `Connection refused on ${config.host}:${config.port}. Make sure the IMAP server is running and the port is correct.` };
+    }
+    if (errMsg.includes('ETIMEDOUT') || errMsg.includes('timeout')) {
+      return { success: false, error: `Connection timed out to ${config.host}:${config.port}. Check that the host and port are correct and the server is reachable.` };
+    }
+    if (errMsg.includes('AUTHENTICATIONFAILED') || errMsg.includes('Invalid credentials') || errMsg.includes('LOGIN failed')) {
+      return { success: false, error: 'Authentication failed. Check your username and password.' };
+    }
+    
     return { success: false, error: errMsg };
   }
 }

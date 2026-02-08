@@ -1,4 +1,4 @@
-// ─── Enums (previously from @prisma/client) ───────────────
+// ─── Enums ─────────────────────────────────────────────────
 
 export const UserRole = {
   ADMIN: 'ADMIN',

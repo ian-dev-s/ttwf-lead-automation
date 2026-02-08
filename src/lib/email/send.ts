@@ -32,6 +32,12 @@ async function createTransporter(teamId: string) {
       user: config.smtp.auth.user,
       pass: config.smtp.auth.pass,
     },
+    tls: {
+      // Allow self-signed certificates for local development (e.g. hMailServer, MailHog)
+      rejectUnauthorized: false,
+      // Allow older TLS versions that local mail servers may use
+      minVersion: 'TLSv1' as const,
+    },
   });
 }
 
@@ -101,6 +107,25 @@ export async function verifySmtpConnection(teamId: string): Promise<{ connected:
     return { connected: true };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    const config = await getEmailConfig(teamId).catch(() => null);
+    
+    // Provide more actionable error messages
+    if (errorMessage.includes('ECONNREFUSED')) {
+      return { connected: false, error: `Connection refused on ${config?.smtp.host}:${config?.smtp.port}. Make sure the SMTP server is running and the port is correct.` };
+    }
+    if (errorMessage.includes('ETIMEDOUT') || errorMessage.includes('timeout')) {
+      return { connected: false, error: `Connection timed out. Check that the host and port are correct and the server is reachable.` };
+    }
+    if (errorMessage.includes('wrong version number') || errorMessage.includes('Unexpected close')) {
+      const suggestion = config?.smtp.secure
+        ? `TLS/SSL handshake failed on port ${config?.smtp.port}. Try disabling "Use Secure Connection" for port 587/25, or use port 465 with it enabled.`
+        : `Connection failed on port ${config?.smtp.port}. If using port 465, enable "Use Secure Connection".`;
+      return { connected: false, error: suggestion };
+    }
+    if (errorMessage.includes('Invalid login') || errorMessage.includes('authentication') || errorMessage.includes('535')) {
+      return { connected: false, error: 'Authentication failed. Check your username and password.' };
+    }
+    
     return { connected: false, error: errorMessage };
   }
 }

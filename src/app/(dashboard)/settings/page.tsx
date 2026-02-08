@@ -17,7 +17,7 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { modelOptions } from '@/lib/ai/constants';
-import { Brain, Check, Key, Loader2, Mail, MessageSquare, Palette, Save, Search, Trash2 } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, Brain, Check, CheckCircle2, Key, Loader2, Mail, MessageSquare, Palette, Save, Search, Trash2, XCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 interface ProviderStatus {
@@ -98,9 +98,13 @@ export default function SettingsPage() {
   const [emailStatus, setEmailStatus] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [isTestingSmtp, setIsTestingSmtp] = useState(false);
+  const [isTestingImap, setIsTestingImap] = useState(false);
   const [isSendingTest, setIsSendingTest] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [smtpTestResult, setSmtpTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [imapTestResult, setImapTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [saveEmailResult, setSaveEmailResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // AI config form state
   const [selectedProvider, setSelectedProvider] = useState<string>('CURSOR');
@@ -115,6 +119,7 @@ export default function SettingsPage() {
     secure: false,
     username: '',
     password: '',
+    maskedUser: null as string | null,
     from: '',
     debugMode: false,
     debugAddress: '',
@@ -125,6 +130,7 @@ export default function SettingsPage() {
     secure: true,
     username: '',
     password: '',
+    maskedUser: null as string | null,
   });
   const [isSavingEmail, setIsSavingEmail] = useState(false);
 
@@ -163,14 +169,15 @@ export default function SettingsPage() {
       setEmailConfig(emailConfigData);
       setApiKeys(apiKeysData);
       
-      // Initialize email forms from config (don't load masked secrets)
+      // Initialize email forms from config
       if (emailConfigData) {
         setSmtpForm({
           host: emailConfigData.smtp.host || '',
           port: emailConfigData.smtp.port || 587,
           secure: emailConfigData.smtp.secure || false,
-          username: '', // Don't load masked username
-          password: '', // Never load password
+          username: '',
+          password: '',
+          maskedUser: emailConfigData.smtp.user || null,
           from: emailConfigData.smtp.from || '',
           debugMode: emailConfigData.smtp.debugMode || false,
           debugAddress: emailConfigData.smtp.debugAddress || '',
@@ -179,8 +186,9 @@ export default function SettingsPage() {
           host: emailConfigData.imap.host || '',
           port: emailConfigData.imap.port || 993,
           secure: emailConfigData.imap.secure !== false,
-          username: '', // Don't load masked username
-          password: '', // Never load password
+          username: '',
+          password: '',
+          maskedUser: emailConfigData.imap.user || null,
         });
       }
       
@@ -283,27 +291,53 @@ export default function SettingsPage() {
     }
   };
 
-  const handleTestConnection = async () => {
-    setIsTestingConnection(true);
-    setTestResult(null);
+  const handleTestSmtpConnection = async () => {
+    setIsTestingSmtp(true);
+    setSmtpTestResult(null);
     try {
       const response = await fetch('/api/email/test-connection', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'smtp' }),
       });
 
       const data = await response.json();
       
       if (response.ok && data.success) {
-        setTestResult({ success: true, message: data.message || 'Connection successful!' });
-        // Refresh email status
+        setSmtpTestResult({ success: true, message: data.message || 'SMTP connection successful!' });
         await fetchData();
       } else {
-        setTestResult({ success: false, message: data.message || data.error || 'Connection failed' });
+        setSmtpTestResult({ success: false, message: data.message || data.error || 'SMTP connection failed' });
       }
     } catch {
-      setTestResult({ success: false, message: 'Failed to test connection' });
+      setSmtpTestResult({ success: false, message: 'Failed to test SMTP connection' });
     } finally {
-      setIsTestingConnection(false);
+      setIsTestingSmtp(false);
+    }
+  };
+
+  const handleTestImapConnection = async () => {
+    setIsTestingImap(true);
+    setImapTestResult(null);
+    try {
+      const response = await fetch('/api/email/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'imap' }),
+      });
+
+      const data = await response.json();
+      
+      if (response.ok && data.success) {
+        setImapTestResult({ success: true, message: data.message || 'IMAP connection successful!' });
+        await fetchData();
+      } else {
+        setImapTestResult({ success: false, message: data.message || data.error || 'IMAP connection failed' });
+      }
+    } catch {
+      setImapTestResult({ success: false, message: 'Failed to test IMAP connection' });
+    } finally {
+      setIsTestingImap(false);
     }
   };
 
@@ -332,6 +366,7 @@ export default function SettingsPage() {
 
   const handleSaveEmailConfig = async () => {
     setIsSavingEmail(true);
+    setSaveEmailResult(null);
     try {
       const payload: Record<string, unknown> = {
         smtpHost: smtpForm.host || null,
@@ -346,13 +381,10 @@ export default function SettingsPage() {
       };
 
       // Only include username/password if they were provided
-      // If password is provided, both username and password must be sent together
       if (smtpForm.password) {
         payload.smtpUser = smtpForm.username;
         payload.smtpPass = smtpForm.password;
       } else if (smtpForm.username) {
-        // If only username is provided without password, update username only
-        // Note: This requires the password to already be set in the database
         payload.smtpUser = smtpForm.username;
       }
 
@@ -360,7 +392,6 @@ export default function SettingsPage() {
         payload.imapUser = imapForm.username;
         payload.imapPass = imapForm.password;
       } else if (imapForm.username) {
-        // If only username is provided without password, update username only
         payload.imapUser = imapForm.username;
       }
 
@@ -382,15 +413,20 @@ export default function SettingsPage() {
       setSmtpForm(prev => ({ ...prev, password: '' }));
       setImapForm(prev => ({ ...prev, password: '' }));
 
+      setSaveEmailResult({ success: true, message: 'Email configuration saved successfully!' });
+
       // Refresh email status
       const emailRes = await fetch('/api/email/status');
       if (emailRes.ok) {
         const emailData = await emailRes.json();
         setEmailStatus(emailData);
       }
+
+      // Auto-dismiss success message after 5 seconds
+      setTimeout(() => setSaveEmailResult(null), 5000);
     } catch (error) {
       console.error('Error saving email config:', error);
-      setTestResult({ 
+      setSaveEmailResult({ 
         success: false, 
         message: error instanceof Error ? error.message : 'Failed to save email config' 
       });
@@ -869,249 +905,252 @@ export default function SettingsPage() {
 
           {/* Email Tab */}
           <TabsContent value="email" className="space-y-4">
-            {/* SMTP Configuration */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Mail className="h-5 w-5" />
-                  SMTP Configuration
+                  Email Configuration
                 </CardTitle>
                 <CardDescription>
-                  Configure your SMTP email settings
+                  Configure your incoming (IMAP) and outgoing (SMTP) email server settings
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>SMTP Host</Label>
-                    <Input
-                      value={smtpForm.host}
-                      onChange={(e) => setSmtpForm(prev => ({ ...prev, host: e.target.value }))}
-                      placeholder="smtp.gmail.com"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>SMTP Port</Label>
-                    <Input
-                      type="number"
-                      value={smtpForm.port}
-                      onChange={(e) => setSmtpForm(prev => ({ ...prev, port: parseInt(e.target.value) || 587 }))}
-                      placeholder="587"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>SMTP Username</Label>
-                    <Input
-                      value={smtpForm.username}
-                      onChange={(e) => setSmtpForm(prev => ({ ...prev, username: e.target.value }))}
-                      placeholder="your-email@gmail.com"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>SMTP Password</Label>
-                    <Input
-                      type="password"
-                      value={smtpForm.password}
-                      onChange={(e) => setSmtpForm(prev => ({ ...prev, password: e.target.value }))}
-                      placeholder="Leave empty to keep current password"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>From Address</Label>
-                    <Input
-                      type="email"
-                      value={smtpForm.from}
-                      onChange={(e) => setSmtpForm(prev => ({ ...prev, from: e.target.value }))}
-                      placeholder="noreply@example.com"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Debug Address</Label>
-                    <Input
-                      type="email"
-                      value={smtpForm.debugAddress}
-                      onChange={(e) => setSmtpForm(prev => ({ ...prev, debugAddress: e.target.value }))}
-                      placeholder="debug@example.com"
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="space-y-1">
-                    <Label>Use Secure Connection (TLS/SSL)</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Enable for ports 465 (SSL) or 587 (TLS)
-                    </p>
-                  </div>
-                  <Switch
-                    checked={smtpForm.secure}
-                    onCheckedChange={(checked) => setSmtpForm(prev => ({ ...prev, secure: checked }))}
-                  />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="space-y-1">
-                    <Label>Debug Mode</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Send all emails to debug address instead of recipients
-                    </p>
-                  </div>
-                  <Switch
-                    checked={smtpForm.debugMode}
-                    onCheckedChange={(checked) => setSmtpForm(prev => ({ ...prev, debugMode: checked }))}
-                  />
-                </div>
-                <Button onClick={handleSaveEmailConfig} disabled={isSavingEmail}>
-                  {isSavingEmail && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                  <Save className="h-4 w-4 mr-2" />
-                  Save Email Config
-                </Button>
-              </CardContent>
-            </Card>
-
-            {/* IMAP Configuration */}
-            <Card>
-              <CardHeader>
-                <CardTitle>IMAP Configuration</CardTitle>
-                <CardDescription>
-                  Configure IMAP settings for reading emails
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>IMAP Host</Label>
-                    <Input
-                      value={imapForm.host}
-                      onChange={(e) => setImapForm(prev => ({ ...prev, host: e.target.value }))}
-                      placeholder="imap.gmail.com"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>IMAP Port</Label>
-                    <Input
-                      type="number"
-                      value={imapForm.port}
-                      onChange={(e) => setImapForm(prev => ({ ...prev, port: parseInt(e.target.value) || 993 }))}
-                      placeholder="993"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>IMAP Username</Label>
-                    <Input
-                      value={imapForm.username}
-                      onChange={(e) => setImapForm(prev => ({ ...prev, username: e.target.value }))}
-                      placeholder="your-email@gmail.com"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>IMAP Password</Label>
-                    <Input
-                      type="password"
-                      value={imapForm.password}
-                      onChange={(e) => setImapForm(prev => ({ ...prev, password: e.target.value }))}
-                      placeholder="Leave empty to keep current password"
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="space-y-1">
-                    <Label>Use Secure Connection (TLS/SSL)</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Enable for secure IMAP connections
-                    </p>
-                  </div>
-                  <Switch
-                    checked={imapForm.secure}
-                    onCheckedChange={(checked) => setImapForm(prev => ({ ...prev, secure: checked }))}
-                  />
-                </div>
-                <Button onClick={handleSaveEmailConfig} disabled={isSavingEmail}>
-                  {isSavingEmail && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                  <Save className="h-4 w-4 mr-2" />
-                  Save Email Config
-                </Button>
-              </CardContent>
-            </Card>
-
-            {/* Connection Status & Testing */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Connection Status</CardTitle>
-                <CardDescription>
-                  Test your email configuration
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {emailStatus ? (
-                  <>
-                    <div className={`flex items-center gap-3 p-4 rounded-lg border ${
-                      emailStatus.connected && emailStatus.isConfigured
-                        ? 'border-green-500/30 bg-green-500/5'
-                        : 'border-muted'
+              <CardContent className="space-y-8">
+                {/* Save result feedback */}
+                {saveEmailResult && (
+                  <div className={`flex items-center gap-2 p-3 rounded-lg ${
+                    saveEmailResult.success
+                      ? 'bg-green-500/10 border border-green-500/30'
+                      : 'bg-destructive/10 border border-destructive/30'
+                  }`}>
+                    {saveEmailResult.success 
+                      ? <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
+                      : <XCircle className="h-4 w-4 text-destructive shrink-0" />
+                    }
+                    <span className={`text-sm ${
+                      saveEmailResult.success ? 'text-green-700 dark:text-green-400' : 'text-destructive'
                     }`}>
-                      <div className={`w-2 h-2 rounded-full ${
-                        emailStatus.connected && emailStatus.isConfigured
-                          ? 'bg-green-500'
-                          : 'bg-muted-foreground/30'
-                      }`} />
-                      <div className="flex-1">
-                        <div className="font-medium">
-                          {emailStatus.connected && emailStatus.isConfigured
-                            ? 'Connected'
-                            : 'Not Configured'}
-                        </div>
-                        {emailStatus.error && (
-                          <div className="text-sm text-destructive mt-1">
-                            {emailStatus.error}
-                          </div>
-                        )}
-                      </div>
-                      {emailStatus.connected && emailStatus.isConfigured && (
-                        <Badge variant="default" className="bg-green-600">
-                          <Check className="h-3 w-3 mr-1" />
-                          Connected
-                        </Badge>
-                      )}
-                    </div>
-
-                    <div className="flex gap-3">
-                      <Button
-                        onClick={handleTestConnection}
-                        disabled={isTestingConnection || !emailStatus?.isConfigured}
-                        variant="outline"
-                      >
-                        {isTestingConnection && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                        Test Connection
-                      </Button>
-                      <Button
-                        onClick={handleSendTestEmail}
-                        disabled={isSendingTest || !emailStatus?.isConfigured}
-                        variant="outline"
-                      >
-                        {isSendingTest && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                        Send Test Email
-                      </Button>
-                    </div>
-
-                    {testResult && (
-                      <div className={`p-3 rounded-lg ${
-                        testResult.success
-                          ? 'bg-green-500/10 border border-green-500/30'
-                          : 'bg-destructive/10 border border-destructive/30'
-                      }`}>
-                        <div className={`text-sm ${
-                          testResult.success ? 'text-green-700 dark:text-green-400' : 'text-destructive'
-                        }`}>
-                          {testResult.message}
-                        </div>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="text-center py-8 text-muted-foreground">
-                    <Loader2 className="h-8 w-8 mx-auto mb-4 animate-spin" />
-                    <p>Loading email status...</p>
+                      {saveEmailResult.message}
+                    </span>
                   </div>
                 )}
+
+                {/* ── IMAP (Incoming) ── */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 pb-2 border-b">
+                    <ArrowDownToLine className="h-4 w-4 text-blue-500" />
+                    <h3 className="font-semibold text-base">Incoming Mail (IMAP)</h3>
+                    <span className="text-xs text-muted-foreground ml-auto">For receiving emails</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>IMAP Host</Label>
+                      <Input
+                        value={imapForm.host}
+                        onChange={(e) => setImapForm(prev => ({ ...prev, host: e.target.value }))}
+                        placeholder="imap.gmail.com"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>IMAP Port</Label>
+                      <Input
+                        type="number"
+                        value={imapForm.port}
+                        onChange={(e) => setImapForm(prev => ({ ...prev, port: parseInt(e.target.value) || 993 }))}
+                        placeholder="993"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>IMAP Username</Label>
+                      <Input
+                        value={imapForm.username}
+                        onChange={(e) => setImapForm(prev => ({ ...prev, username: e.target.value }))}
+                        placeholder={imapForm.maskedUser || 'your-email@gmail.com'}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>IMAP Password</Label>
+                      <Input
+                        type="password"
+                        value={imapForm.password}
+                        onChange={(e) => setImapForm(prev => ({ ...prev, password: e.target.value }))}
+                        placeholder="Leave empty to keep current password"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <Label>Use Secure Connection (TLS/SSL)</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Enable for secure IMAP connections (port 993). Disable for plain or STARTTLS (port 143).
+                      </p>
+                    </div>
+                    <Switch
+                      checked={imapForm.secure}
+                      onCheckedChange={(checked) => setImapForm(prev => ({ ...prev, secure: checked }))}
+                    />
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Button
+                      onClick={handleTestImapConnection}
+                      disabled={isTestingImap}
+                      variant="outline"
+                      size="sm"
+                    >
+                      {isTestingImap && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Test IMAP Connection
+                    </Button>
+                    {imapTestResult && (
+                      <div className={`flex items-center gap-1.5 text-sm ${
+                        imapTestResult.success ? 'text-green-700 dark:text-green-400' : 'text-destructive'
+                      }`}>
+                        {imapTestResult.success 
+                          ? <CheckCircle2 className="h-4 w-4 shrink-0" /> 
+                          : <XCircle className="h-4 w-4 shrink-0" />
+                        }
+                        {imapTestResult.message}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* ── SMTP (Outgoing) ── */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 pb-2 border-b">
+                    <ArrowUpFromLine className="h-4 w-4 text-emerald-500" />
+                    <h3 className="font-semibold text-base">Outgoing Mail (SMTP)</h3>
+                    <span className="text-xs text-muted-foreground ml-auto">For sending emails</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>SMTP Host</Label>
+                      <Input
+                        value={smtpForm.host}
+                        onChange={(e) => setSmtpForm(prev => ({ ...prev, host: e.target.value }))}
+                        placeholder="smtp.gmail.com"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>SMTP Port</Label>
+                      <Input
+                        type="number"
+                        value={smtpForm.port}
+                        onChange={(e) => setSmtpForm(prev => ({ ...prev, port: parseInt(e.target.value) || 587 }))}
+                        placeholder="587"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>SMTP Username</Label>
+                      <Input
+                        value={smtpForm.username}
+                        onChange={(e) => setSmtpForm(prev => ({ ...prev, username: e.target.value }))}
+                        placeholder={smtpForm.maskedUser || 'your-email@gmail.com'}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>SMTP Password</Label>
+                      <Input
+                        type="password"
+                        value={smtpForm.password}
+                        onChange={(e) => setSmtpForm(prev => ({ ...prev, password: e.target.value }))}
+                        placeholder="Leave empty to keep current password"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>From Address</Label>
+                      <Input
+                        type="email"
+                        value={smtpForm.from}
+                        onChange={(e) => setSmtpForm(prev => ({ ...prev, from: e.target.value }))}
+                        placeholder="noreply@example.com"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Debug Address</Label>
+                      <Input
+                        type="email"
+                        value={smtpForm.debugAddress}
+                        onChange={(e) => setSmtpForm(prev => ({ ...prev, debugAddress: e.target.value }))}
+                        placeholder="debug@example.com"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <Label>Use Secure Connection (TLS/SSL)</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Enable for port 465 (SSL). Disable for port 587 (STARTTLS) or port 25 (plain).
+                      </p>
+                    </div>
+                    <Switch
+                      checked={smtpForm.secure}
+                      onCheckedChange={(checked) => setSmtpForm(prev => ({ ...prev, secure: checked }))}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <Label>Debug Mode</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Send all emails to debug address instead of recipients
+                      </p>
+                    </div>
+                    <Switch
+                      checked={smtpForm.debugMode}
+                      onCheckedChange={(checked) => setSmtpForm(prev => ({ ...prev, debugMode: checked }))}
+                    />
+                  </div>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <Button
+                      onClick={handleTestSmtpConnection}
+                      disabled={isTestingSmtp}
+                      variant="outline"
+                      size="sm"
+                    >
+                      {isTestingSmtp && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Test SMTP Connection
+                    </Button>
+                    <Button
+                      onClick={handleSendTestEmail}
+                      disabled={isSendingTest}
+                      variant="outline"
+                      size="sm"
+                    >
+                      {isSendingTest && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Send Test Email
+                    </Button>
+                    {smtpTestResult && (
+                      <div className={`flex items-center gap-1.5 text-sm ${
+                        smtpTestResult.success ? 'text-green-700 dark:text-green-400' : 'text-destructive'
+                      }`}>
+                        {smtpTestResult.success 
+                          ? <CheckCircle2 className="h-4 w-4 shrink-0" /> 
+                          : <XCircle className="h-4 w-4 shrink-0" />
+                        }
+                        {smtpTestResult.message}
+                      </div>
+                    )}
+                    {testResult && (
+                      <div className={`flex items-center gap-1.5 text-sm ${
+                        testResult.success ? 'text-green-700 dark:text-green-400' : 'text-destructive'
+                      }`}>
+                        {testResult.success 
+                          ? <CheckCircle2 className="h-4 w-4 shrink-0" /> 
+                          : <XCircle className="h-4 w-4 shrink-0" />
+                        }
+                        {testResult.message}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* ── Save Button ── */}
+                <div className="pt-4 border-t">
+                  <Button onClick={handleSaveEmailConfig} disabled={isSavingEmail}>
+                    {isSavingEmail && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    <Save className="h-4 w-4 mr-2" />
+                    Save Email Config
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
