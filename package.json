@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "seed:firebase": "npx tsx scripts/seed-firebase.ts"
+    "seed:firebase": "npx tsx scripts/seed-firebase.ts",
+    "dev:start-firebase": "npm run dev:firebase"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.31",
